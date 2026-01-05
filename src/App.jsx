@@ -3,7 +3,9 @@ import { CardSearch } from './pages/CardSearch';
 
 function App() {
   return (
-    <CardSearch />
+    <div className="app">
+      <CardSearch />
+    </div>
   )
 }
 
