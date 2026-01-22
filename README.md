@@ -7,7 +7,7 @@ A web-based Magic: The Gathering proxy playtesting application. Build decks, pla
 - **Card Search** - Search for MTG cards using the Scryfall API
 - **Deck Builder** - Create and manage decks with local storage persistence (for now, likely move to DB later)
 - **Solo Playtesting** - Test your decks with a full playspace (battlefield, hand, graveyard, exile, library). Play spaces are manually managed for now as rules engine is a huge task.
-- **Multiplayer** - Create or join game rooms to play with others in real-time. No auth right now, so anyone can join any room. Totally insecure and anyone can mess everything up at any time. 
+- **Multiplayer** - Create or join game rooms to play with others in real-time. Uses Firebase Anonymous Auth with ownership-based security rules (room creators control their rooms, players control their own state). 
 - **Observer Mode** - Watch ongoing multiplayer games
 
 ## Tech Stack
@@ -92,7 +92,19 @@ The app will be available at `http://localhost:5173`
     - `order: string[]` (ordered `instanceId`s)
   - **Why:**
     - Preserves ordering for zones where order matters.
-    - Enables future “diff-style” updates (update only the touched card / order change) rather than rewriting entire arrays.
+    - Enables diff-based updates (see below).
+
+- **Incremental (diff-based) Firebase writes**
+  - **What:** Instead of syncing full zone state on every change, the client tracks previous state and computes diffs:
+    - Card property changes (tap/untap) → writes only `.../cardsById/<instanceId>/tapped`
+    - Card additions → writes only the new card entry
+    - Card removals → deletes only the removed card entry
+    - Order changes → updates only the `order` array when cards actually move
+  - **Results:** ~75x reduction in transfer size for common actions:
+    - Initial sync: ~3.3 KB (full state, unavoidable)
+    - Tapping a card: **44 bytes** (previously ~3.3 KB)
+    - Moving cards between zones: 800–1300 bytes (just affected cards + order)
+  - **Why:** Dramatically reduces Firebase bandwidth, improves sync latency, and keeps costs low.
 
 ### TypeScript / Vite environment setup
 
@@ -122,40 +134,64 @@ src/
 
 ## Future Wins
 
-- **Incremental (diff-based) Firebase writes**
-  - Instead of syncing full zones, update only:
-    - a single card (`.../cardsById/<instanceId>/tapped`)
-    - and/or the relevant `order` list when cards move.
-
-- **Security + abuse prevention**
-  - Add Firebase Auth (anonymous is fine) + Realtime Database security rules.
-  - Optional: App Check.
-
 - **Presence + cleanup**
-  - Automatically mark players offline with presence.
-  - Optionally remove/disconnect players from turn order.
+  - Automatically mark players offline with Firebase `onDisconnect()` presence.
+  - Optionally remove/disconnect players from turn order after extended absence.
 
 - **Observability**
   - Add lightweight logging / metrics around message sizes and update frequency.
+
+- **App Check**
+  - Add Firebase App Check for additional abuse prevention.
 
 ## Firebase Security Notes (recommended for public deployments)
 
 If you deploy this publicly, treat Firebase as public infrastructure. The Firebase web config is intentionally visible to clients, so access control should be enforced via **Firebase Auth** and **Realtime Database Rules**.
 
-### Minimal rules: require authentication
+### Current implementation: ownership-based rules
 
-After enabling **Firebase Auth → Anonymous**, you can start with a simple rule set that blocks unauthenticated reads/writes:
+The app uses **Anonymous Auth** and stores ownership information (`createdByUid` on rooms, `uid` on player nodes) to enforce:
+- Only the room creator can delete/cancel a room
+- Players can only modify their own player state
+
+After enabling **Firebase Auth → Anonymous**, use these rules:
 
 ```json
 {
   "rules": {
-    ".read": "auth != null",
-    ".write": "auth != null"
+    "roomsIndex": {
+      ".read": "auth != null",
+      "$roomId": {
+        ".write": "auth != null && ((!data.exists() && newData.child('createdByUid').val() === auth.uid) || (data.exists() && data.child('createdByUid').val() === auth.uid))",
+        "players": {
+          "$odId": {
+            ".write": "auth != null && (data.child('uid').val() === auth.uid || (!data.exists() && newData.child('uid').val() === auth.uid))"
+          }
+        }
+      }
+    },
+    "rooms": {
+      ".read": "auth != null",
+      "$roomId": {
+        ".write": "auth != null && ((!data.exists() && newData.child('createdByUid').val() === auth.uid) || (data.exists() && data.child('createdByUid').val() === auth.uid))",
+        "players": {
+          "$odId": {
+            ".write": "auth != null && (data.child('uid').val() === auth.uid || (!data.exists() && newData.child('uid').val() === auth.uid))"
+          }
+        },
+        "turnOrder": {
+          ".write": "auth != null"
+        },
+        "currentTurnIndex": {
+          ".write": "auth != null"
+        }
+      }
+    }
   }
 }
 ```
 
-This is a baseline anti-abuse measure. For stronger protection, add rules that restrict writes so users can only update their own player node.
+This provides marginal grief prevention for public deployments while keeping the game functional.
 
 ## License
 

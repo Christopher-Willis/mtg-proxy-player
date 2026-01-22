@@ -5,12 +5,15 @@ import { getCardImageUrl, getCachedCardById, prefetchCardsById } from '../servic
 import {
   joinGameRoom,
   updatePlayerState,
+  updatePlayerStateDiff,
   setPlayerOnlineStatus,
   addPlayerToTurnOrder,
   advanceTurn,
   subscribeToRoom,
   GameRoom,
   PlayerState,
+  ZoneDiff,
+  PlayerStateDiff,
   ensureSignedIn,
 } from '../services/firebase';
 import { Deck, FirebaseGameCard, FirebaseZoneWire, GameCard, ScryfallCard } from '../types/card';
@@ -55,6 +58,62 @@ function toWireZone(zone: GameCard[]): FirebaseZoneWire {
     order.push(gc.instanceId);
   }
   return { cardsById, order };
+}
+
+function computeZoneDiff(prev: FirebaseZoneWire | null, current: FirebaseZoneWire): ZoneDiff | null {
+  const addedCards: Record<string, FirebaseGameCard> = {};
+  const removedCardIds: string[] = [];
+  const updatedCards: Record<string, Partial<FirebaseGameCard>> = {};
+  let orderChanged = false;
+
+  const prevCardsById = prev?.cardsById || {};
+  const prevOrder = prev?.order || [];
+
+  for (const [instanceId, card] of Object.entries(current.cardsById)) {
+    const prevCard = prevCardsById[instanceId];
+    if (!prevCard) {
+      addedCards[instanceId] = card;
+    } else {
+      const updates: Partial<FirebaseGameCard> = {};
+      if (prevCard.tapped !== card.tapped) updates.tapped = card.tapped;
+      if (prevCard.faceDown !== card.faceDown) updates.faceDown = card.faceDown;
+      if (Object.keys(updates).length > 0) {
+        updatedCards[instanceId] = updates;
+      }
+    }
+  }
+
+  for (const instanceId of Object.keys(prevCardsById)) {
+    if (!current.cardsById[instanceId]) {
+      removedCardIds.push(instanceId);
+    }
+  }
+
+  if (prevOrder.length !== current.order.length) {
+    orderChanged = true;
+  } else {
+    for (let i = 0; i < current.order.length; i++) {
+      if (prevOrder[i] !== current.order[i]) {
+        orderChanged = true;
+        break;
+      }
+    }
+  }
+
+  const hasChanges =
+    Object.keys(addedCards).length > 0 ||
+    removedCardIds.length > 0 ||
+    Object.keys(updatedCards).length > 0 ||
+    orderChanged;
+
+  if (!hasChanges) return null;
+
+  return {
+    addedCards,
+    removedCardIds,
+    updatedCards,
+    newOrder: orderChanged ? current.order : null,
+  };
 }
 
 function hydrateZone(
@@ -170,7 +229,12 @@ export function MultiplayerGame() {
 
     let unsubscribe: (() => void) | undefined;
     void (async () => {
-      await ensureSignedIn();
+      const user = await ensureSignedIn();
+      if (!user?.uid) {
+        alert('Unable to sign in. Please refresh and try again.');
+        navigate('/lobby');
+        return;
+      }
       unsubscribe = subscribeToRoom(roomId, (roomData) => {
       console.log('[MultiplayerGame] Room subscription callback', { 
         roomData: roomData ? 'exists' : 'null',
@@ -227,7 +291,7 @@ export function MultiplayerGame() {
           const gameCards = createGameCards(loadedDeck);
           setLibrary(gameCards);
 
-          joinGameRoom(roomId, odId, playerName, loadedDeck.name, {
+          joinGameRoom(roomId, odId, user.uid, playerName, loadedDeck.name, {
             battlefield: toWireZone([]),
             graveyard: toWireZone([]),
             exile: toWireZone([]),
@@ -273,6 +337,16 @@ export function MultiplayerGame() {
   }, [roomId, deckId, navigate, odId, playerName]);
 
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastSyncedStateRef = useRef<{
+    battlefield: FirebaseZoneWire;
+    graveyard: FirebaseZoneWire;
+    exile: FirebaseZoneWire;
+    hand: FirebaseZoneWire;
+    library: FirebaseZoneWire;
+    handCount: number;
+    libraryCount: number;
+    life: number;
+  } | null>(null);
 
   useEffect(() => {
     console.log('[MultiplayerGame] Sync effect', { roomId, isReady, handLen: hand.length, libLen: library.length });
@@ -286,18 +360,68 @@ export function MultiplayerGame() {
     }
 
     syncTimeoutRef.current = setTimeout(() => {
-      console.log('[MultiplayerGame] Syncing state to Firebase');
-      updatePlayerState(roomId, odId, {
-        battlefield: toWireZone(battlefield),
-        graveyard: toWireZone(graveyard),
-        exile: toWireZone(exile),
-        hand: toWireZone(hand),
-        library: toWireZone(library),
+      const currentBattlefield = toWireZone(battlefield);
+      const currentGraveyard = toWireZone(graveyard);
+      const currentExile = toWireZone(exile);
+      const currentHand = toWireZone(hand);
+      const currentLibrary = toWireZone(library);
+
+      const prev = lastSyncedStateRef.current;
+
+      if (!prev) {
+        console.log('[MultiplayerGame] Initial sync - sending full state');
+        updatePlayerState(roomId, odId, {
+          battlefield: currentBattlefield,
+          graveyard: currentGraveyard,
+          exile: currentExile,
+          hand: currentHand,
+          library: currentLibrary,
+          handCount: hand.length,
+          libraryCount: library.length,
+          life,
+          isOnline: true,
+        });
+      } else {
+        const diff: PlayerStateDiff = {};
+
+        const battlefieldDiff = computeZoneDiff(prev.battlefield, currentBattlefield);
+        const graveyardDiff = computeZoneDiff(prev.graveyard, currentGraveyard);
+        const exileDiff = computeZoneDiff(prev.exile, currentExile);
+        const handDiff = computeZoneDiff(prev.hand, currentHand);
+        const libraryDiff = computeZoneDiff(prev.library, currentLibrary);
+
+        if (battlefieldDiff) diff.battlefield = battlefieldDiff;
+        if (graveyardDiff) diff.graveyard = graveyardDiff;
+        if (exileDiff) diff.exile = exileDiff;
+        if (handDiff) diff.hand = handDiff;
+        if (libraryDiff) diff.library = libraryDiff;
+        if (prev.handCount !== hand.length) diff.handCount = hand.length;
+        if (prev.libraryCount !== library.length) diff.libraryCount = library.length;
+        if (prev.life !== life) diff.life = life;
+
+        const hasChanges = Object.keys(diff).length > 0;
+
+        if (hasChanges) {
+          console.log('[MultiplayerGame] Diff sync', {
+            zones: Object.keys(diff).filter(k => ['battlefield', 'graveyard', 'exile', 'hand', 'library'].includes(k)),
+            life: diff.life !== undefined,
+          });
+          updatePlayerStateDiff(roomId, odId, diff);
+        } else {
+          console.log('[MultiplayerGame] No changes to sync');
+        }
+      }
+
+      lastSyncedStateRef.current = {
+        battlefield: currentBattlefield,
+        graveyard: currentGraveyard,
+        exile: currentExile,
+        hand: currentHand,
+        library: currentLibrary,
         handCount: hand.length,
         libraryCount: library.length,
         life,
-        isOnline: true,
-      });
+      };
     }, 300);
 
     return () => {

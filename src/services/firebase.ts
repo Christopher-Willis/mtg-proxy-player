@@ -1,7 +1,7 @@
 import { initializeApp } from 'firebase/app';
-import { getDatabase, ref, onValue, push, remove, update, Database } from 'firebase/database';
+import { getDatabase, ref, onValue, push, remove, set, update, Database } from 'firebase/database';
 import { getAuth, onAuthStateChanged, signInAnonymously, Auth, User } from 'firebase/auth';
-import { FirebaseZoneWire } from '../types/card';
+import { FirebaseZoneWire, FirebaseGameCard } from '../types/card';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -61,6 +61,7 @@ export function ensureSignedIn(): Promise<User | null> {
         resolve(creds.user);
       } catch (err) {
         console.warn('Anonymous sign-in failed. Multiplayer features may not work.', err);
+        authReadyPromise = null;
         unsubscribe();
         resolve(null);
       }
@@ -77,6 +78,7 @@ export function getCurrentUserId(): string | null {
 
 export type PlayerStateWire = {
   odId: string;
+  uid: string;
   playerName: string;
   odName: string;
   battlefield: FirebaseZoneWire;
@@ -97,6 +99,7 @@ export type GameRoom = {
   id: string;
   name: string;
   createdAt: number;
+  createdByUid: string;
   players: Record<string, PlayerStateWire>;
   turnOrder?: string[];
   currentTurnIndex?: number;
@@ -104,6 +107,7 @@ export type GameRoom = {
 
 export type PlayerSummary = {
   odId: string;
+  uid: string;
   playerName: string;
   odName: string;
   isOnline: boolean;
@@ -113,10 +117,11 @@ export type RoomIndex = {
   id: string;
   name: string;
   createdAt: number;
+  createdByUid: string;
   players: Record<string, PlayerSummary>;
 };
 
-export function createGameRoom(roomName: string): string | null {
+export async function createGameRoom(roomName: string, createdByUid: string): Promise<string | null> {
   const db = getDb();
   if (!db) return null;
 
@@ -131,6 +136,7 @@ export function createGameRoom(roomName: string): string | null {
     id: roomId,
     name: roomName,
     createdAt,
+    createdByUid,
     players: {},
     turnOrder: [],
     currentTurnIndex: 0,
@@ -140,13 +146,14 @@ export function createGameRoom(roomName: string): string | null {
     id: roomId,
     name: roomName,
     createdAt,
+    createdByUid,
     players: {},
   };
 
-  update(ref(db), {
-    [`rooms/${roomId}`]: room,
-    [`roomsIndex/${roomId}`]: roomIndex,
-  });
+  await Promise.all([
+    set(ref(db, `rooms/${roomId}`), room),
+    set(ref(db, `roomsIndex/${roomId}`), roomIndex),
+  ]);
   return roomId;
 }
 
@@ -157,8 +164,8 @@ export function addPlayerToTurnOrder(roomId: string, turnOrder: string[], odId: 
   if (turnOrder.includes(odId)) return;
 
   const nextOrder = [...turnOrder, odId];
-  update(ref(db), {
-    [`rooms/${roomId}/turnOrder`]: nextOrder,
+  update(ref(db, `rooms/${roomId}`), {
+    turnOrder: nextOrder,
   });
 }
 
@@ -168,14 +175,15 @@ export function advanceTurn(roomId: string, turnOrderLength: number, currentTurn
   if (turnOrderLength <= 0) return;
 
   const nextIndex = (currentTurnIndex + 1) % turnOrderLength;
-  update(ref(db), {
-    [`rooms/${roomId}/currentTurnIndex`]: nextIndex,
+  update(ref(db, `rooms/${roomId}`), {
+    currentTurnIndex: nextIndex,
   });
 }
 
 export function joinGameRoom(
   roomId: string,
   odId: string,
+  uid: string,
   playerName: string,
   deckName: string,
   initialState: Partial<PlayerStateWire>
@@ -187,6 +195,7 @@ export function joinGameRoom(
 
   const playerState: PlayerStateWire = {
     odId,
+    uid,
     playerName,
     odName: deckName,
     battlefield: initialState.battlefield ?? emptyZone,
@@ -203,26 +212,27 @@ export function joinGameRoom(
 
   const playerSummary: PlayerSummary = {
     odId,
+    uid,
     playerName,
     odName: deckName,
     isOnline: true,
   };
 
-  update(ref(db), {
-    [`rooms/${roomId}/players/${odId}`]: playerState,
-    [`roomsIndex/${roomId}/players/${odId}`]: playerSummary,
-  });
+  void Promise.all([
+    set(ref(db, `rooms/${roomId}/players/${odId}`), playerState),
+    set(ref(db, `roomsIndex/${roomId}/players/${odId}`), playerSummary),
+  ]);
 }
 
 export function setPlayerOnlineStatus(roomId: string, odId: string, isOnline: boolean) {
   const db = getDb();
   if (!db) return;
 
-  update(ref(db), {
-    [`rooms/${roomId}/players/${odId}/isOnline`]: isOnline,
-    [`rooms/${roomId}/players/${odId}/lastUpdate`]: Date.now(),
-    [`roomsIndex/${roomId}/players/${odId}/isOnline`]: isOnline,
-  });
+  const lastUpdate = Date.now();
+  void Promise.all([
+    update(ref(db, `rooms/${roomId}/players/${odId}`), { isOnline, lastUpdate }),
+    update(ref(db, `roomsIndex/${roomId}/players/${odId}`), { isOnline }),
+  ]);
 }
 
 export function updatePlayerState(roomId: string, odId: string, updates: Partial<PlayerStateWire>) {
@@ -231,6 +241,73 @@ export function updatePlayerState(roomId: string, odId: string, updates: Partial
 
   const playerRef = ref(db, `rooms/${roomId}/players/${odId}`);
   update(playerRef, { ...updates, lastUpdate: Date.now() });
+}
+
+export type ZoneDiff = {
+  addedCards: Record<string, FirebaseGameCard>;
+  removedCardIds: string[];
+  updatedCards: Record<string, Partial<FirebaseGameCard>>;
+  newOrder: string[] | null;
+};
+
+export type PlayerStateDiff = {
+  battlefield?: ZoneDiff;
+  graveyard?: ZoneDiff;
+  exile?: ZoneDiff;
+  hand?: ZoneDiff;
+  library?: ZoneDiff;
+  handCount?: number;
+  libraryCount?: number;
+  life?: number;
+};
+
+export function updatePlayerStateDiff(roomId: string, odId: string, diff: PlayerStateDiff) {
+  const db = getDb();
+  if (!db) return;
+
+  const basePath = `rooms/${roomId}/players/${odId}`;
+  const updates: Record<string, unknown> = {
+    [`${basePath}/lastUpdate`]: Date.now(),
+    [`${basePath}/isOnline`]: true,
+  };
+
+  const zones = ['battlefield', 'graveyard', 'exile', 'hand', 'library'] as const;
+  for (const zoneName of zones) {
+    const zoneDiff = diff[zoneName];
+    if (!zoneDiff) continue;
+
+    const zonePath = `${basePath}/${zoneName}`;
+
+    for (const [instanceId, card] of Object.entries(zoneDiff.addedCards)) {
+      updates[`${zonePath}/cardsById/${instanceId}`] = card;
+    }
+
+    for (const instanceId of zoneDiff.removedCardIds) {
+      updates[`${zonePath}/cardsById/${instanceId}`] = null;
+    }
+
+    for (const [instanceId, cardUpdates] of Object.entries(zoneDiff.updatedCards)) {
+      for (const [key, value] of Object.entries(cardUpdates)) {
+        updates[`${zonePath}/cardsById/${instanceId}/${key}`] = value;
+      }
+    }
+
+    if (zoneDiff.newOrder !== null) {
+      updates[`${zonePath}/order`] = zoneDiff.newOrder;
+    }
+  }
+
+  if (diff.handCount !== undefined) {
+    updates[`${basePath}/handCount`] = diff.handCount;
+  }
+  if (diff.libraryCount !== undefined) {
+    updates[`${basePath}/libraryCount`] = diff.libraryCount;
+  }
+  if (diff.life !== undefined) {
+    updates[`${basePath}/life`] = diff.life;
+  }
+
+  update(ref(db), updates);
 }
 
 export function leaveGameRoom(roomId: string, odId: string) {
@@ -249,10 +326,9 @@ export function deleteGameRoom(roomId: string) {
   if (!db) return;
 
   const roomRef = ref(db, `rooms/${roomId}`);
-  remove(roomRef);
-
   const roomIndexRef = ref(db, `roomsIndex/${roomId}`);
-  remove(roomIndexRef);
+
+  return Promise.all([remove(roomRef), remove(roomIndexRef)]).then(() => undefined);
 }
 
 export function subscribeToRoom(

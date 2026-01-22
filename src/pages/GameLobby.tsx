@@ -8,6 +8,9 @@ export function GameLobby() {
   const navigate = useNavigate();
   const [decks, setDecks] = useState<Deck[]>([]);
   const [rooms, setRooms] = useState<RoomIndex[]>([]);
+  const [currentUid, setCurrentUid] = useState<string | null>(null);
+  const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+  const [cancellingRoomId, setCancellingRoomId] = useState<string | null>(null);
   const [selectedDeck, setSelectedDeck] = useState<string>('');
   const [playerName, setPlayerName] = useState(() => localStorage.getItem('mtg-player-name') || '');
   const [newRoomName, setNewRoomName] = useState('');
@@ -21,7 +24,8 @@ export function GameLobby() {
     if (db) {
       let unsubscribe: (() => void) | undefined;
       void (async () => {
-        await ensureSignedIn();
+        const user = await ensureSignedIn();
+        setCurrentUid(user?.uid ?? null);
         unsubscribe = subscribeToRoomList((roomList) => {
           setRooms(roomList);
         });
@@ -39,12 +43,26 @@ export function GameLobby() {
     }
   }, [playerName]);
 
-  function handleCreateRoom() {
-    if (!newRoomName.trim() || !selectedDeck || !playerName.trim()) return;
+  async function handleCreateRoom() {
+    if (!newRoomName.trim() || !selectedDeck || !playerName.trim() || isCreatingRoom) return;
+    setIsCreatingRoom(true);
 
-    const roomId = createGameRoom(newRoomName.trim());
-    if (roomId) {
-      navigate(`/multiplayer/${roomId}?deck=${selectedDeck}&name=${encodeURIComponent(playerName)}`);
+    try {
+      const user = await ensureSignedIn();
+      if (!user?.uid) {
+        alert('Unable to sign in. Please refresh and try again.');
+        return;
+      }
+
+      const roomId = await createGameRoom(newRoomName.trim(), user.uid);
+      if (roomId) {
+        navigate(`/multiplayer/${roomId}?deck=${selectedDeck}&name=${encodeURIComponent(playerName)}`);
+      }
+    } catch (err) {
+      console.warn('[GameLobby] createGameRoom failed', err);
+      alert('Failed to create game room. Check Firebase rules/auth and try again.');
+    } finally {
+      setIsCreatingRoom(false);
     }
   }
 
@@ -56,9 +74,27 @@ export function GameLobby() {
     navigate(`/multiplayer/${roomId}?deck=${selectedDeck}&name=${encodeURIComponent(playerName)}`);
   }
 
-  function handleCancelRoom(roomId: string, roomName: string) {
-    if (confirm(`Are you sure you want to cancel the game "${roomName}"? All players will be removed.`)) {
-      deleteGameRoom(roomId);
+  async function handleCancelRoom(roomId: string, roomName: string) {
+    if (cancellingRoomId) return;
+    setCancellingRoomId(roomId);
+    const room = rooms.find((r) => r.id === roomId);
+    try {
+      const uid = currentUid ?? (await ensureSignedIn())?.uid ?? null;
+      if (uid && uid !== currentUid) {
+        setCurrentUid(uid);
+      }
+      if (!uid || !room?.createdByUid || room.createdByUid !== uid) {
+        alert('Only the room creator can cancel this game.');
+        return;
+      }
+      if (confirm(`Are you sure you want to cancel the game "${roomName}"? All players will be removed.`)) {
+        await deleteGameRoom(roomId);
+      }
+    } catch (err) {
+      console.warn('[GameLobby] deleteGameRoom failed', err);
+      alert('Failed to cancel game. This is usually a Firebase rules/permissions issue.');
+    } finally {
+      setCancellingRoomId(null);
     }
   }
 
@@ -168,7 +204,7 @@ export function GameLobby() {
             />
             <button
               onClick={handleCreateRoom}
-              disabled={!newRoomName.trim() || !selectedDeck || !playerName.trim()}
+              disabled={!newRoomName.trim() || !selectedDeck || !playerName.trim() || isCreatingRoom}
               className="px-6 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded font-semibold"
             >
               Create & Join
@@ -254,7 +290,9 @@ export function GameLobby() {
                       )}
                       <button
                         onClick={() => handleCancelRoom(room.id, room.name)}
-                        className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded"
+                        disabled={Boolean(currentUid) && room.createdByUid !== currentUid}
+                        className={`px-4 py-2 rounded ${Boolean(currentUid) && room.createdByUid !== currentUid ? 'bg-gray-600 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'}`}
+                        title={Boolean(currentUid) && room.createdByUid !== currentUid ? 'Only the room creator can cancel this game.' : undefined}
                       >
                         Cancel
                       </button>
