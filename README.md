@@ -19,7 +19,9 @@ A web-based Magic: The Gathering proxy playtesting application. Build decks, pla
 - **Vite** for development and building
 - **Tailwind CSS 4** for styling
 - **React Router** for navigation
+- **Zustand** for global state management
 - **Firebase Realtime Database** for multiplayer functionality
+- **Firebase Authentication** (Google + Anonymous)
 - **Scryfall API** for card data and images
 
 ## Prerequisites
@@ -75,6 +77,22 @@ The app will be available at `http://localhost:5173`
 
 ## Recent Enhancements (and why)
 
+### Player identification (UID-based)
+
+- **What:** Players in multiplayer games are now identified by their Firebase Authentication UID, not by deck name or any other identifier.
+- **Why:** Prevents a single authenticated user from joining the same game multiple times. Player names are now purely for display purposes. Simplifies state restoration when rejoining games.
+
+### Global auth state with Zustand
+
+- **What:** Authentication state is now managed globally using Zustand and initialized at app startup.
+- **Why:** Prevents UI flicker when navigating between pages (e.g., seeing "Firebase Not Configured" briefly before the actual content loads). Auth state persists across route changes without re-initialization.
+
+### UX improvements
+
+- **Loading spinners** - Contextual loading indicators for async operations (cloud deck copy/move) prevent double-clicks and provide feedback.
+- **Cursor feedback** - All interactive elements (buttons, clickable icons) now show pointer cursor. Disabled buttons show not-allowed cursor.
+- **Guest mode restrictions** - Guests cannot create games or save to cloud storage, with clear UI indicators explaining why.
+
 ### Multiplayer traffic optimizations
 
 - **Lobby index (`roomsIndex/`)**
@@ -119,8 +137,12 @@ The app will be available at `http://localhost:5173`
 ```
 src/
 ├── components/     # Reusable UI components
+│   ├── AuthButton.tsx   # Login/logout dropdown
+│   ├── Spinner.tsx      # Loading indicator
+│   └── ...
 ├── data/           # Static data and constants
 ├── hooks/          # Custom React hooks
+│   └── useAuth.ts       # Auth hook (uses Zustand store)
 ├── pages/          # Route pages
 │   ├── CardSearch.tsx
 │   ├── DeckBuilder.tsx
@@ -130,8 +152,10 @@ src/
 │   └── PlaySpace.tsx
 ├── services/       # External service integrations
 │   ├── deckStorage.ts   # Local storage for decks
-│   ├── firebase.ts      # Firebase Realtime Database
+│   ├── firebase.ts      # Firebase Realtime Database + Auth
 │   └── scryfall.ts      # Scryfall API client
+├── stores/         # Zustand state stores
+│   └── authStore.ts     # Global auth state
 └── types/          # TypeScript type definitions
 ```
 
