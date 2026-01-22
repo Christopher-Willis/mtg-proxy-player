@@ -5,7 +5,9 @@ A web-based Magic: The Gathering proxy playtesting application. Build decks, pla
 ## Features
 
 - **Card Search** - Search for MTG cards using the Scryfall API
-- **Deck Builder** - Create and manage decks with local storage persistence (for now, likely move to DB later)
+- **Deck Builder** - Create and manage decks with dual storage options:
+  - **Local Storage** - Browser-based storage (fragile, cleared with browser data)
+  - **Cloud Storage** - Firebase-backed storage (max 5 decks, persists across devices, user-owned). Until we have real auth, you can't usefully use this as all login are actually anonymous and not tied to any account.
 - **Solo Playtesting** - Test your decks with a full playspace (battlefield, hand, graveyard, exile, library). Play spaces are manually managed for now as rules engine is a huge task.
 - **Multiplayer** - Create or join game rooms to play with others in real-time. Uses Firebase Anonymous Auth with ownership-based security rules (room creators control their rooms, players control their own state). 
 - **Observer Mode** - Watch ongoing multiplayer games
@@ -185,6 +187,12 @@ After enabling **Firebase Auth → Anonymous**, use these rules:
         "currentTurnIndex": {
           ".write": "auth != null"
         }
+      }
+    },
+    "userDecks": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid"
       }
     }
   }

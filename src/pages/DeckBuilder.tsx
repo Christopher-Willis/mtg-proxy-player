@@ -1,7 +1,8 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useDebouncedValue } from '../hooks/debounce';
 import { searchCards, getCardImageUrl } from '../services/scryfall';
 import { saveDeck, loadDecks, deleteDeck, createNewDeck } from '../services/deckStorage';
+import { saveCloudDeck, deleteCloudDeck, loadCloudDecks, CloudDeck, ensureSignedIn } from '../services/firebase';
 import { ScryfallCard, Deck, DeckCard } from '../types/card';
 import { CardDisplay } from '../components/CardDisplay';
 import { DeckImport } from '../components/DeckImport';
@@ -15,8 +16,25 @@ export function DeckBuilder() {
   const [searchError, setSearchError] = useState<string | null>(null);
 
   const [decks, setDecks] = useState<Deck[]>(() => loadDecks());
+  const [cloudDecks, setCloudDecks] = useState<CloudDeck[]>([]);
   const [currentDeck, setCurrentDeck] = useState<Deck | null>(null);
+  const [currentDeckSource, setCurrentDeckSource] = useState<'local' | 'cloud'>('local');
   const [newDeckName, setNewDeckName] = useState('');
+  const [isCloudLoading, setIsCloudLoading] = useState(true);
+  const [cloudError, setCloudError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    void (async () => {
+      await ensureSignedIn();
+      const cloud = await loadCloudDecks();
+      if (mounted) {
+        setCloudDecks(cloud);
+        setIsCloudLoading(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
 
   const [selectedCard, setSelectedCard] = useState<ScryfallCard | null>(null);
   const [showImport, setShowImport] = useState(false);
@@ -56,8 +74,9 @@ export function DeckBuilder() {
     setNewDeckName('');
   }
 
-  function handleSelectDeck(deck: Deck) {
+  function handleSelectDeck(deck: Deck, source: 'local' | 'cloud') {
     setCurrentDeck(deck);
+    setCurrentDeckSource(source);
   }
 
   function handleDeleteDeck(deckId: string) {
@@ -65,6 +84,60 @@ export function DeckBuilder() {
     setDecks(loadDecks());
     if (currentDeck?.id === deckId) {
       setCurrentDeck(null);
+    }
+  }
+
+  async function handleDeleteCloudDeck(deckId: string) {
+    const result = await deleteCloudDeck(deckId);
+    if (result.success) {
+      setCloudDecks(await loadCloudDecks());
+      if (currentDeck?.id === deckId) {
+        setCurrentDeck(null);
+      }
+    } else {
+      setCloudError(result.error || 'Failed to delete');
+    }
+  }
+
+  async function handleCopyToCloud(deck: Deck) {
+    setCloudError(null);
+    const result = await saveCloudDeck(deck);
+    if (result.success) {
+      setCloudDecks(await loadCloudDecks());
+    } else {
+      setCloudError(result.error || 'Failed to save');
+    }
+  }
+
+  async function handleMoveToCloud(deck: Deck) {
+    setCloudError(null);
+    const result = await saveCloudDeck(deck);
+    if (result.success) {
+      deleteDeck(deck.id);
+      setDecks(loadDecks());
+      setCloudDecks(await loadCloudDecks());
+      if (currentDeck?.id === deck.id) {
+        setCurrentDeck(null);
+      }
+    } else {
+      setCloudError(result.error || 'Failed to save');
+    }
+  }
+
+  function handleCopyToLocal(deck: Deck) {
+    saveDeck({ ...deck });
+    setDecks(loadDecks());
+  }
+
+  async function handleMoveToLocal(deck: Deck) {
+    saveDeck({ ...deck });
+    setDecks(loadDecks());
+    const result = await deleteCloudDeck(deck.id);
+    if (result.success) {
+      setCloudDecks(await loadCloudDecks());
+      if (currentDeck?.id === deck.id) {
+        setCurrentDeck(null);
+      }
     }
   }
 
@@ -142,54 +215,139 @@ export function DeckBuilder() {
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Left: Deck List */}
-          <div className="bg-gray-800 rounded-lg p-4">
-            <h2 className="text-xl font-semibold mb-4">Your Decks</h2>
+          <div className="bg-gray-800 rounded-lg p-4 space-y-6">
+            {/* Local Decks */}
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <h2 className="text-xl font-semibold">Local Decks</h2>
+                <span className="text-xs bg-yellow-600/30 text-yellow-400 px-2 py-0.5 rounded">Browser Storage</span>
+              </div>
+              <p className="text-xs text-gray-500 mb-3">
+                Stored in your browser. Clearing browser data will delete these decks.
+              </p>
 
-            <div className="flex gap-2 mb-4">
-              <input
-                type="text"
-                value={newDeckName}
-                onChange={(e) => setNewDeckName(e.target.value)}
-                placeholder="New deck name..."
-                className="flex-1 px-3 py-2 bg-gray-700 rounded text-white placeholder-gray-400"
-                onKeyDown={(e) => e.key === 'Enter' && handleCreateDeck()}
-              />
-              <button
-                onClick={handleCreateDeck}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded font-semibold"
-              >
-                Create
-              </button>
+              <div className="flex gap-2 mb-3">
+                <input
+                  type="text"
+                  value={newDeckName}
+                  onChange={(e) => setNewDeckName(e.target.value)}
+                  placeholder="New deck name..."
+                  className="flex-1 px-3 py-2 bg-gray-700 rounded text-white placeholder-gray-400 text-sm"
+                  onKeyDown={(e) => e.key === 'Enter' && handleCreateDeck()}
+                />
+                <button
+                  onClick={handleCreateDeck}
+                  className="px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded font-semibold text-sm"
+                >
+                  Create
+                </button>
+              </div>
+
+              <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                {decks.map((deck) => (
+                  <div
+                    key={deck.id}
+                    className={`p-2 rounded cursor-pointer flex justify-between items-center gap-1 ${
+                      currentDeck?.id === deck.id && currentDeckSource === 'local' ? 'bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'
+                    }`}
+                    onClick={() => handleSelectDeck(deck, 'local')}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm truncate">{deck.name}</p>
+                      <p className="text-xs text-gray-400">
+                        {deck.cards.reduce((sum, dc) => sum + dc.quantity, 0)} cards
+                      </p>
+                    </div>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleCopyToCloud(deck); }}
+                        className="text-blue-400 hover:text-blue-300 px-1 text-xs"
+                        title="Copy to cloud"
+                      >
+                        ☁↑
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleMoveToCloud(deck); }}
+                        className="text-green-400 hover:text-green-300 px-1 text-xs"
+                        title="Move to cloud"
+                      >
+                        →☁
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDeleteDeck(deck.id); }}
+                        className="text-red-400 hover:text-red-300 px-1"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {decks.length === 0 && (
+                  <p className="text-gray-500 text-center py-2 text-sm">No local decks</p>
+                )}
+              </div>
             </div>
 
-            <div className="space-y-2">
-              {decks.map((deck) => (
-                <div
-                  key={deck.id}
-                  className={`p-3 rounded cursor-pointer flex justify-between items-center ${
-                    currentDeck?.id === deck.id ? 'bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'
-                  }`}
-                  onClick={() => handleSelectDeck(deck)}
-                >
-                  <div>
-                    <p className="font-medium">{deck.name}</p>
-                    <p className="text-sm text-gray-400">
-                      {deck.cards.reduce((sum, dc) => sum + dc.quantity, 0)} cards
-                    </p>
-                  </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeleteDeck(deck.id);
-                    }}
-                    className="text-red-400 hover:text-red-300 px-2"
-                  >
-                    ✕
-                  </button>
+            {/* Cloud Decks */}
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <h2 className="text-xl font-semibold">Cloud Decks</h2>
+                <span className="text-xs bg-blue-600/30 text-blue-400 px-2 py-0.5 rounded">{cloudDecks.length}/5</span>
+              </div>
+              <p className="text-xs text-gray-500 mb-3">
+                Saved on server. Persists across devices but publicly accessible with minimal protection.
+              </p>
+
+              {cloudError && (
+                <p className="text-red-400 text-xs mb-2">{cloudError}</p>
+              )}
+
+              {isCloudLoading ? (
+                <p className="text-gray-500 text-center py-2 text-sm">Loading cloud decks...</p>
+              ) : (
+                <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                  {cloudDecks.map((deck) => (
+                    <div
+                      key={deck.id}
+                      className={`p-2 rounded cursor-pointer flex justify-between items-center gap-1 ${
+                        currentDeck?.id === deck.id && currentDeckSource === 'cloud' ? 'bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'
+                      }`}
+                      onClick={() => handleSelectDeck(deck, 'cloud')}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-sm truncate">{deck.name}</p>
+                        <p className="text-xs text-gray-400">
+                          {deck.cards.reduce((sum, dc) => sum + dc.quantity, 0)} cards
+                        </p>
+                      </div>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleCopyToLocal(deck); }}
+                          className="text-yellow-400 hover:text-yellow-300 px-1 text-xs"
+                          title="Copy to local"
+                        >
+                          ↓💾
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleMoveToLocal(deck); }}
+                          className="text-green-400 hover:text-green-300 px-1 text-xs"
+                          title="Move to local"
+                        >
+                          💾←
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDeleteCloudDeck(deck.id); }}
+                          className="text-red-400 hover:text-red-300 px-1"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {cloudDecks.length === 0 && (
+                    <p className="text-gray-500 text-center py-2 text-sm">No cloud decks</p>
+                  )}
                 </div>
-              ))}
-              {decks.length === 0 && (
-                <p className="text-gray-500 text-center py-4">No decks yet</p>
               )}
             </div>
           </div>

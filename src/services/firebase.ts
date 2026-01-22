@@ -1,7 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getDatabase, ref, onValue, push, remove, set, update, Database } from 'firebase/database';
 import { getAuth, onAuthStateChanged, signInAnonymously, Auth, User } from 'firebase/auth';
-import { FirebaseZoneWire, FirebaseGameCard } from '../types/card';
+import { FirebaseZoneWire, FirebaseGameCard, Deck } from '../types/card';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -369,4 +369,105 @@ export function subscribeToRoomList(callback: (rooms: RoomIndex[]) => void): () 
   });
 
   return unsubscribe;
+}
+
+const MAX_CLOUD_DECKS = 5;
+
+export type CloudDeck = Deck & {
+  odId: string;
+};
+
+export async function loadCloudDecks(): Promise<CloudDeck[]> {
+  const db = getDb();
+  const user = await ensureSignedIn();
+  if (!db || !user?.uid) return [];
+
+  return new Promise((resolve) => {
+    const decksRef = ref(db, `userDecks/${user.uid}`);
+    onValue(decksRef, (snapshot) => {
+      const data = snapshot.val();
+      if (!data) {
+        resolve([]);
+        return;
+      }
+      const decks = Object.entries(data).map(([odId, deck]) => ({
+        ...(deck as Deck),
+        odId,
+      }));
+      resolve(decks);
+    }, { onlyOnce: true });
+  });
+}
+
+export function subscribeToCloudDecks(callback: (decks: CloudDeck[]) => void): () => void {
+  const db = getDb();
+  if (!db || !auth?.currentUser?.uid) {
+    callback([]);
+    return () => {};
+  }
+
+  const decksRef = ref(db, `userDecks/${auth.currentUser.uid}`);
+  const unsubscribe = onValue(decksRef, (snapshot) => {
+    const data = snapshot.val();
+    if (!data) {
+      callback([]);
+      return;
+    }
+    const decks = Object.entries(data).map(([odId, deck]) => ({
+      ...(deck as Deck),
+      odId,
+    }));
+    callback(decks);
+  });
+
+  return unsubscribe;
+}
+
+export async function saveCloudDeck(deck: Deck): Promise<{ success: boolean; error?: string }> {
+  const db = getDb();
+  const user = await ensureSignedIn();
+  if (!db || !user?.uid) {
+    return { success: false, error: 'Not signed in' };
+  }
+
+  const existingDecks = await loadCloudDecks();
+  const existingIndex = existingDecks.findIndex((d) => d.id === deck.id);
+
+  if (existingIndex < 0 && existingDecks.length >= MAX_CLOUD_DECKS) {
+    return { success: false, error: `Maximum ${MAX_CLOUD_DECKS} cloud decks allowed` };
+  }
+
+  const odId = existingIndex >= 0 ? existingDecks[existingIndex].odId : push(ref(db, `userDecks/${user.uid}`)).key;
+  if (!odId) {
+    return { success: false, error: 'Failed to generate deck ID' };
+  }
+
+  const deckData: Deck = {
+    ...deck,
+    updatedAt: Date.now(),
+  };
+
+  await set(ref(db, `userDecks/${user.uid}/${odId}`), deckData);
+  return { success: true };
+}
+
+export async function deleteCloudDeck(deckId: string): Promise<{ success: boolean; error?: string }> {
+  const db = getDb();
+  const user = await ensureSignedIn();
+  if (!db || !user?.uid) {
+    return { success: false, error: 'Not signed in' };
+  }
+
+  const existingDecks = await loadCloudDecks();
+  const deck = existingDecks.find((d) => d.id === deckId);
+  if (!deck) {
+    return { success: false, error: 'Deck not found' };
+  }
+
+  await remove(ref(db, `userDecks/${user.uid}/${deck.odId}`));
+  return { success: true };
+}
+
+export function getCloudDeckCount(): Promise<number> {
+  return loadCloudDecks().then((decks) => decks.length);
 }
