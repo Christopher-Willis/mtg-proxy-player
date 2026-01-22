@@ -250,9 +250,9 @@ export function MultiplayerGame() {
       setRoom(roomData);
 
       if (roomData?.turnOrder) {
-        addPlayerToTurnOrder(roomId, roomData.turnOrder, odId);
+        addPlayerToTurnOrder(roomId, roomData.turnOrder, odId, true);
       } else {
-        addPlayerToTurnOrder(roomId, [], odId);
+        addPlayerToTurnOrder(roomId, [], odId, true);
       }
 
       if (!isInitializedRef.current && roomData?.players) {

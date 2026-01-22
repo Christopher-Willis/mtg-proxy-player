@@ -157,9 +157,9 @@ export async function createGameRoom(roomName: string, createdByUid: string): Pr
   return roomId;
 }
 
-export function addPlayerToTurnOrder(roomId: string, turnOrder: string[], odId: string) {
+export function addPlayerToTurnOrder(roomId: string, turnOrder: string[], odId: string, roomExists: boolean) {
   const db = getDb();
-  if (!db) return;
+  if (!db || !roomExists) return;
 
   if (turnOrder.includes(odId)) return;
 
