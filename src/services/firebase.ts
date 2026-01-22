@@ -168,6 +168,9 @@ export async function linkAnonymousToGoogle(): Promise<{ success: boolean; error
     if (error.code === 'auth/credential-already-in-use') {
       return { success: false, error: 'This Google account is already linked to another user' };
     }
+    if (error.code === 'auth/provider-already-linked') {
+      return { success: true };
+    }
     return { success: false, error: error.message || 'Failed to link account' };
   }
 }
