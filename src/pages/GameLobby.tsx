@@ -1,44 +1,44 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { loadDecks } from '../services/deckStorage';
-import { createGameRoom, subscribeToRoomList, getDb, RoomIndex, deleteGameRoom, ensureSignedIn } from '../services/firebase';
+import { createGameRoom, subscribeToRoomList, RoomIndex, deleteGameRoom, ensureSignedIn } from '../services/firebase';
 import { Deck } from '../types/card';
 import { AuthButton } from '../components/AuthButton';
 import { useAuth } from '../hooks/useAuth';
+import { Spinner } from '../components/Spinner';
 
 export function GameLobby() {
   const navigate = useNavigate();
-  const { isAnonymous } = useAuth();
+  const { isAnonymous, isLoading: isAuthLoading, firebaseConfigured, user } = useAuth();
   const [decks, setDecks] = useState<Deck[]>([]);
   const [rooms, setRooms] = useState<RoomIndex[]>([]);
-  const [currentUid, setCurrentUid] = useState<string | null>(null);
   const [isCreatingRoom, setIsCreatingRoom] = useState(false);
   const [cancellingRoomId, setCancellingRoomId] = useState<string | null>(null);
   const [selectedDeck, setSelectedDeck] = useState<string>('');
   const [playerName, setPlayerName] = useState(() => localStorage.getItem('mtg-player-name') || '');
   const [newRoomName, setNewRoomName] = useState('');
-  const [isFirebaseConfigured, setIsFirebaseConfigured] = useState(false);
+
+  const currentUid = user?.uid ?? null;
 
   useEffect(() => {
     setDecks(loadDecks());
-    const db = getDb();
-    setIsFirebaseConfigured(!!db);
-
-    if (db) {
-      let unsubscribe: (() => void) | undefined;
-      void (async () => {
-        const user = await ensureSignedIn();
-        setCurrentUid(user?.uid ?? null);
-        unsubscribe = subscribeToRoomList((roomList) => {
-          setRooms(roomList);
-        });
-      })();
-
-      return () => {
-        if (unsubscribe) unsubscribe();
-      };
-    }
   }, []);
+
+  useEffect(() => {
+    if (!firebaseConfigured || isAuthLoading) return;
+
+    let unsubscribe: (() => void) | undefined;
+    void (async () => {
+      await ensureSignedIn();
+      unsubscribe = subscribeToRoomList((roomList) => {
+        setRooms(roomList);
+      });
+    })();
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [firebaseConfigured, isAuthLoading]);
 
   useEffect(() => {
     if (playerName) {
@@ -83,9 +83,6 @@ export function GameLobby() {
     const room = rooms.find((r) => r.id === roomId);
     try {
       const uid = currentUid ?? (await ensureSignedIn())?.uid ?? null;
-      if (uid && uid !== currentUid) {
-        setCurrentUid(uid);
-      }
       if (!uid || !room?.createdByUid || room.createdByUid !== uid) {
         alert('Only the room creator can cancel this game.');
         return;
@@ -101,7 +98,18 @@ export function GameLobby() {
     }
   }
 
-  if (!isFirebaseConfigured) {
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
+        <div className="text-center">
+          <Spinner size="lg" className="mx-auto mb-4" />
+          <p className="text-gray-400">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!firebaseConfigured) {
     return (
       <div className="min-h-screen bg-gray-900 text-white p-8">
         <div className="max-w-2xl mx-auto">

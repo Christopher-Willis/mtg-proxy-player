@@ -6,6 +6,7 @@ import { saveCloudDeck, deleteCloudDeck, loadCloudDecks, CloudDeck, ensureSigned
 import { ScryfallCard, Deck, DeckCard } from '../types/card';
 import { CardDisplay } from '../components/CardDisplay';
 import { DeckImport } from '../components/DeckImport';
+import { Spinner } from '../components/Spinner';
 import { useNavigate } from 'react-router-dom';
 import { AuthButton } from '../components/AuthButton';
 import { useAuth } from '../hooks/useAuth';
@@ -25,6 +26,7 @@ export function DeckBuilder() {
   const [newDeckName, setNewDeckName] = useState('');
   const [isCloudLoading, setIsCloudLoading] = useState(true);
   const [cloudError, setCloudError] = useState<string | null>(null);
+  const [pendingOps, setPendingOps] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let mounted = true;
@@ -103,27 +105,39 @@ export function DeckBuilder() {
   }
 
   async function handleCopyToCloud(deck: Deck) {
+    const opKey = `copy-to-cloud-${deck.id}`;
+    setPendingOps(prev => new Set(prev).add(opKey));
     setCloudError(null);
-    const result = await saveCloudDeck(deck);
-    if (result.success) {
-      setCloudDecks(await loadCloudDecks());
-    } else {
-      setCloudError(result.error || 'Failed to save');
+    try {
+      const result = await saveCloudDeck(deck);
+      if (result.success) {
+        setCloudDecks(await loadCloudDecks());
+      } else {
+        setCloudError(result.error || 'Failed to save');
+      }
+    } finally {
+      setPendingOps(prev => { const next = new Set(prev); next.delete(opKey); return next; });
     }
   }
 
   async function handleMoveToCloud(deck: Deck) {
+    const opKey = `move-to-cloud-${deck.id}`;
+    setPendingOps(prev => new Set(prev).add(opKey));
     setCloudError(null);
-    const result = await saveCloudDeck(deck);
-    if (result.success) {
-      deleteDeck(deck.id);
-      setDecks(loadDecks());
-      setCloudDecks(await loadCloudDecks());
-      if (currentDeck?.id === deck.id) {
-        setCurrentDeck(null);
+    try {
+      const result = await saveCloudDeck(deck);
+      if (result.success) {
+        deleteDeck(deck.id);
+        setDecks(loadDecks());
+        setCloudDecks(await loadCloudDecks());
+        if (currentDeck?.id === deck.id) {
+          setCurrentDeck(null);
+        }
+      } else {
+        setCloudError(result.error || 'Failed to save');
       }
-    } else {
-      setCloudError(result.error || 'Failed to save');
+    } finally {
+      setPendingOps(prev => { const next = new Set(prev); next.delete(opKey); return next; });
     }
   }
 
@@ -133,14 +147,20 @@ export function DeckBuilder() {
   }
 
   async function handleMoveToLocal(deck: Deck) {
-    saveDeck({ ...deck });
-    setDecks(loadDecks());
-    const result = await deleteCloudDeck(deck.id);
-    if (result.success) {
-      setCloudDecks(await loadCloudDecks());
-      if (currentDeck?.id === deck.id) {
-        setCurrentDeck(null);
+    const opKey = `move-to-local-${deck.id}`;
+    setPendingOps(prev => new Set(prev).add(opKey));
+    try {
+      saveDeck({ ...deck });
+      setDecks(loadDecks());
+      const result = await deleteCloudDeck(deck.id);
+      if (result.success) {
+        setCloudDecks(await loadCloudDecks());
+        if (currentDeck?.id === deck.id) {
+          setCurrentDeck(null);
+        }
       }
+    } finally {
+      setPendingOps(prev => { const next = new Set(prev); next.delete(opKey); return next; });
     }
   }
 
@@ -267,17 +287,19 @@ export function DeckBuilder() {
                         <>
                           <button
                             onClick={(e) => { e.stopPropagation(); handleCopyToCloud(deck); }}
-                            className="text-blue-400 hover:text-blue-300 px-1 text-xs"
+                            disabled={pendingOps.has(`copy-to-cloud-${deck.id}`) || pendingOps.has(`move-to-cloud-${deck.id}`)}
+                            className="text-blue-400 hover:text-blue-300 disabled:text-gray-500 px-1 text-xs"
                             title="Copy to cloud"
                           >
-                            ☁↑
+                            {pendingOps.has(`copy-to-cloud-${deck.id}`) ? <Spinner size="sm" /> : '☁↑'}
                           </button>
                           <button
                             onClick={(e) => { e.stopPropagation(); handleMoveToCloud(deck); }}
-                            className="text-green-400 hover:text-green-300 px-1 text-xs"
+                            disabled={pendingOps.has(`copy-to-cloud-${deck.id}`) || pendingOps.has(`move-to-cloud-${deck.id}`)}
+                            className="text-green-400 hover:text-green-300 disabled:text-gray-500 px-1 text-xs"
                             title="Move to cloud"
                           >
-                            →☁
+                            {pendingOps.has(`move-to-cloud-${deck.id}`) ? <Spinner size="sm" /> : '→☁'}
                           </button>
                         </>
                       )}
@@ -348,21 +370,24 @@ export function DeckBuilder() {
                           <div className="flex gap-1">
                             <button
                               onClick={(e) => { e.stopPropagation(); handleCopyToLocal(deck); }}
-                              className="text-yellow-400 hover:text-yellow-300 px-1 text-xs"
+                              disabled={pendingOps.has(`move-to-local-${deck.id}`)}
+                              className="text-yellow-400 hover:text-yellow-300 disabled:text-gray-500 px-1 text-xs"
                               title="Copy to local"
                             >
                               ↓💾
                             </button>
                             <button
                               onClick={(e) => { e.stopPropagation(); handleMoveToLocal(deck); }}
-                              className="text-green-400 hover:text-green-300 px-1 text-xs"
+                              disabled={pendingOps.has(`move-to-local-${deck.id}`)}
+                              className="text-green-400 hover:text-green-300 disabled:text-gray-500 px-1 text-xs"
                               title="Move to local"
                             >
-                              💾←
+                              {pendingOps.has(`move-to-local-${deck.id}`) ? <Spinner size="sm" /> : '💾←'}
                             </button>
                             <button
                               onClick={(e) => { e.stopPropagation(); handleDeleteCloudDeck(deck.id); }}
-                              className="text-red-400 hover:text-red-300 px-1"
+                              disabled={pendingOps.has(`move-to-local-${deck.id}`)}
+                              className="text-red-400 hover:text-red-300 disabled:text-gray-500 px-1"
                             >
                               ✕
                             </button>
