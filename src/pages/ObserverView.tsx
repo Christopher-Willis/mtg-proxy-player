@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { subscribeToRoom, GameRoom, PlayerState } from '../services/firebase';
+import { subscribeToRoom, GameRoom, PlayerState, ensureSignedIn } from '../services/firebase';
 import { getCardImageUrl, getCachedCardById, prefetchCardsById } from '../services/scryfall';
 import { FirebaseGameCard, FirebaseZoneWire, GameCard, ScryfallCard } from '../types/card';
 
@@ -68,38 +68,44 @@ export function ObserverView() {
       return;
     }
 
-    const unsubscribe = subscribeToRoom(roomId, (roomData) => {
-      if (roomData === null) {
-        alert('This game has been cancelled.');
-        navigate('/lobby');
-        return;
-      }
-      setRoom(roomData);
-      if (!roomData?.players) {
-        setPlayers([]);
-        return;
-      }
+    let unsubscribe: (() => void) | undefined;
+    void (async () => {
+      await ensureSignedIn();
+      unsubscribe = subscribeToRoom(roomId, (roomData) => {
+        if (roomData === null) {
+          alert('This game has been cancelled.');
+          navigate('/lobby');
+          return;
+        }
+        setRoom(roomData);
+        if (!roomData?.players) {
+          setPlayers([]);
+          return;
+        }
 
-      const wirePlayers = Object.values(roomData.players);
-      const idsToPrefetch = wirePlayers
-        .flatMap((p) => [...collectZoneCardIds(p.battlefield), ...collectZoneCardIds(p.graveyard), ...collectZoneCardIds(p.exile)])
-        .filter(Boolean);
+        const wirePlayers = Object.values(roomData.players);
+        const idsToPrefetch = wirePlayers
+          .flatMap((p) => [...collectZoneCardIds(p.battlefield), ...collectZoneCardIds(p.graveyard), ...collectZoneCardIds(p.exile)])
+          .filter(Boolean);
 
-      void (async () => {
-        await prefetchCardsById(idsToPrefetch);
-        const hydrated: HydratedPlayer[] = wirePlayers.map((p) => ({
-          ...p,
-          battlefield: hydrateZone(p.battlefield),
-          graveyard: hydrateZone(p.graveyard),
-          exile: hydrateZone(p.exile),
-          hand: [],
-          library: [],
-        }));
-        setPlayers(hydrated);
-      })();
-    });
+        void (async () => {
+          await prefetchCardsById(idsToPrefetch);
+          const hydrated: HydratedPlayer[] = wirePlayers.map((p) => ({
+            ...p,
+            battlefield: hydrateZone(p.battlefield),
+            graveyard: hydrateZone(p.graveyard),
+            exile: hydrateZone(p.exile),
+            hand: [],
+            library: [],
+          }));
+          setPlayers(hydrated);
+        })();
+      });
+    })();
 
-    return unsubscribe;
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
   }, [roomId, navigate]);
 
   if (!room) {

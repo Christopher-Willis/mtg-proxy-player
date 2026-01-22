@@ -138,6 +138,25 @@ src/
 - **Observability**
   - Add lightweight logging / metrics around message sizes and update frequency.
 
+## Firebase Security Notes (recommended for public deployments)
+
+If you deploy this publicly, treat Firebase as public infrastructure. The Firebase web config is intentionally visible to clients, so access control should be enforced via **Firebase Auth** and **Realtime Database Rules**.
+
+### Minimal rules: require authentication
+
+After enabling **Firebase Auth → Anonymous**, you can start with a simple rule set that blocks unauthenticated reads/writes:
+
+```json
+{
+  "rules": {
+    ".read": "auth != null",
+    ".write": "auth != null"
+  }
+}
+```
+
+This is a baseline anti-abuse measure. For stronger protection, add rules that restrict writes so users can only update their own player node.
+
 ## License
 
 MIT

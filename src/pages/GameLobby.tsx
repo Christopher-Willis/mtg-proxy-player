@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { loadDecks } from '../services/deckStorage';
-import { createGameRoom, subscribeToRoomList, getDb, RoomIndex, deleteGameRoom } from '../services/firebase';
+import { createGameRoom, subscribeToRoomList, getDb, RoomIndex, deleteGameRoom, ensureSignedIn } from '../services/firebase';
 import { Deck } from '../types/card';
 
 export function GameLobby() {
@@ -19,10 +19,17 @@ export function GameLobby() {
     setIsFirebaseConfigured(!!db);
 
     if (db) {
-      const unsubscribe = subscribeToRoomList((roomList) => {
-        setRooms(roomList);
-      });
-      return unsubscribe;
+      let unsubscribe: (() => void) | undefined;
+      void (async () => {
+        await ensureSignedIn();
+        unsubscribe = subscribeToRoomList((roomList) => {
+          setRooms(roomList);
+        });
+      })();
+
+      return () => {
+        if (unsubscribe) unsubscribe();
+      };
     }
   }, []);
 
@@ -177,10 +184,8 @@ export function GameLobby() {
           ) : (
             <div className="space-y-2">
               {rooms.map((room) => {
-                const myExistingSession = room.players
-                  ? Object.values(room.players).find(
-                      (p) => p.playerName === playerName && !p.isOnline
-                    )
+                const mySession = room.players
+                  ? Object.values(room.players).find((p) => p.playerName === playerName)
                   : null;
 
                 return (
@@ -202,9 +207,9 @@ export function GameLobby() {
                           </span>
                         ))}
                       </p>
-                      {myExistingSession && (
+                      {mySession && (
                         <p className="text-sm text-yellow-400 mt-1">
-                          You have an existing session with deck: {myExistingSession.odName}
+                          You have an existing session with deck: {mySession.odName}
                         </p>
                       )}
                     </div>
@@ -215,20 +220,30 @@ export function GameLobby() {
                       >
                         Observe
                       </button>
-                      {myExistingSession ? (
-                        <button
-                          onClick={() => {
-                            const deckToUse = decks.find((d) => d.name === myExistingSession.odName);
-                            if (deckToUse) {
-                              navigate(`/multiplayer/${room.id}?deck=${deckToUse.id}&name=${encodeURIComponent(playerName)}&odId=${myExistingSession.odId}`);
-                            } else {
-                              alert(`Deck "${myExistingSession.odName}" not found locally. You may need to re-import it.`);
-                            }
-                          }}
-                          className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded font-semibold"
-                        >
-                          Rejoin
-                        </button>
+                      {mySession ? (
+                        mySession.isOnline ? (
+                          <button
+                            disabled
+                            className="px-4 py-2 bg-gray-600 cursor-not-allowed rounded"
+                            title="You are already connected in another tab/window. Close it or leave the game to rejoin here."
+                          >
+                            Already Connected
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => {
+                              const deckToUse = decks.find((d) => d.name === mySession.odName);
+                              if (deckToUse) {
+                                navigate(`/multiplayer/${room.id}?deck=${deckToUse.id}&name=${encodeURIComponent(playerName)}&odId=${mySession.odId}`);
+                              } else {
+                                alert(`Deck "${mySession.odName}" not found locally. You may need to re-import it.`);
+                              }
+                            }}
+                            className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded font-semibold"
+                          >
+                            Rejoin
+                          </button>
+                        )
                       ) : (
                         <button
                           onClick={() => handleJoinRoom(room.id)}

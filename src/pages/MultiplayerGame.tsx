@@ -11,6 +11,7 @@ import {
   subscribeToRoom,
   GameRoom,
   PlayerState,
+  ensureSignedIn,
 } from '../services/firebase';
 import { Deck, FirebaseGameCard, FirebaseZoneWire, GameCard, ScryfallCard } from '../types/card';
 
@@ -167,7 +168,10 @@ export function MultiplayerGame() {
       localCards.set(dc.card.id, dc.card);
     }
 
-    const unsubscribe = subscribeToRoom(roomId, (roomData) => {
+    let unsubscribe: (() => void) | undefined;
+    void (async () => {
+      await ensureSignedIn();
+      unsubscribe = subscribeToRoom(roomId, (roomData) => {
       console.log('[MultiplayerGame] Room subscription callback', { 
         roomData: roomData ? 'exists' : 'null',
         isInitialized: isInitializedRef.current,
@@ -258,9 +262,10 @@ export function MultiplayerGame() {
         })();
       }
     });
+    })();
 
     return () => {
-      unsubscribe();
+      if (unsubscribe) unsubscribe();
       if (roomId) {
         setPlayerOnlineStatus(roomId, odId, false);
       }

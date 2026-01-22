@@ -1,5 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getDatabase, ref, onValue, push, remove, update, Database } from 'firebase/database';
+import { getAuth, onAuthStateChanged, signInAnonymously, Auth, User } from 'firebase/auth';
 import { FirebaseZoneWire } from '../types/card';
 
 const firebaseConfig = {
@@ -14,6 +15,8 @@ const firebaseConfig = {
 
 let app: ReturnType<typeof initializeApp> | null = null;
 let database: Database | null = null;
+let auth: Auth | null = null;
+let authReadyPromise: Promise<User | null> | null = null;
 
 export function initFirebase() {
   if (!firebaseConfig.databaseURL) {
@@ -24,6 +27,7 @@ export function initFirebase() {
   if (!app) {
     app = initializeApp(firebaseConfig);
     database = getDatabase(app);
+    auth = getAuth(app);
   }
   return database;
 }
@@ -33,6 +37,42 @@ export function getDb() {
     initFirebase();
   }
   return database;
+}
+
+export function ensureSignedIn(): Promise<User | null> {
+  const db = getDb();
+  if (!db || !auth) {
+    return Promise.resolve(null);
+  }
+
+  if (authReadyPromise) return authReadyPromise;
+
+  authReadyPromise = new Promise((resolve) => {
+    const unsubscribe = onAuthStateChanged(auth as Auth, async (user) => {
+      if (user) {
+        unsubscribe();
+        resolve(user);
+        return;
+      }
+
+      try {
+        const creds = await signInAnonymously(auth as Auth);
+        unsubscribe();
+        resolve(creds.user);
+      } catch (err) {
+        console.warn('Anonymous sign-in failed. Multiplayer features may not work.', err);
+        unsubscribe();
+        resolve(null);
+      }
+    });
+  });
+
+  return authReadyPromise;
+}
+
+export function getCurrentUserId(): string | null {
+  if (!auth) return null;
+  return auth.currentUser?.uid ?? null;
 }
 
 export type PlayerStateWire = {
