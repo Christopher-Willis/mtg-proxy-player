@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
-import { getDatabase, ref, set, onValue, push, remove, update, Database } from 'firebase/database';
-import { GameCard } from '../types/card';
+import { getDatabase, ref, onValue, push, remove, update, Database } from 'firebase/database';
+import { FirebaseZoneWire } from '../types/card';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -35,15 +35,15 @@ export function getDb() {
   return database;
 }
 
-export type PlayerState = {
+export type PlayerStateWire = {
   odId: string;
   playerName: string;
   odName: string;
-  battlefield: GameCard[];
-  graveyard: GameCard[];
-  exile: GameCard[];
-  hand: GameCard[];
-  library: GameCard[];
+  battlefield: FirebaseZoneWire;
+  graveyard: FirebaseZoneWire;
+  exile: FirebaseZoneWire;
+  hand: FirebaseZoneWire;
+  library: FirebaseZoneWire;
   handCount: number;
   libraryCount: number;
   life: number;
@@ -51,11 +51,29 @@ export type PlayerState = {
   isOnline: boolean;
 };
 
+export type PlayerState = PlayerStateWire;
+
 export type GameRoom = {
   id: string;
   name: string;
   createdAt: number;
-  players: Record<string, PlayerState>;
+  players: Record<string, PlayerStateWire>;
+  turnOrder?: string[];
+  currentTurnIndex?: number;
+};
+
+export type PlayerSummary = {
+  odId: string;
+  playerName: string;
+  odName: string;
+  isOnline: boolean;
+};
+
+export type RoomIndex = {
+  id: string;
+  name: string;
+  createdAt: number;
+  players: Record<string, PlayerSummary>;
 };
 
 export function createGameRoom(roomName: string): string | null {
@@ -68,15 +86,51 @@ export function createGameRoom(roomName: string): string | null {
 
   if (!roomId) return null;
 
+  const createdAt = Date.now();
   const room: Omit<GameRoom, 'players'> & { players: Record<string, never> } = {
     id: roomId,
     name: roomName,
-    createdAt: Date.now(),
+    createdAt,
+    players: {},
+    turnOrder: [],
+    currentTurnIndex: 0,
+  };
+
+  const roomIndex: RoomIndex = {
+    id: roomId,
+    name: roomName,
+    createdAt,
     players: {},
   };
 
-  set(newRoomRef, room);
+  update(ref(db), {
+    [`rooms/${roomId}`]: room,
+    [`roomsIndex/${roomId}`]: roomIndex,
+  });
   return roomId;
+}
+
+export function addPlayerToTurnOrder(roomId: string, turnOrder: string[], odId: string) {
+  const db = getDb();
+  if (!db) return;
+
+  if (turnOrder.includes(odId)) return;
+
+  const nextOrder = [...turnOrder, odId];
+  update(ref(db), {
+    [`rooms/${roomId}/turnOrder`]: nextOrder,
+  });
+}
+
+export function advanceTurn(roomId: string, turnOrderLength: number, currentTurnIndex: number) {
+  const db = getDb();
+  if (!db) return;
+  if (turnOrderLength <= 0) return;
+
+  const nextIndex = (currentTurnIndex + 1) % turnOrderLength;
+  update(ref(db), {
+    [`rooms/${roomId}/currentTurnIndex`]: nextIndex,
+  });
 }
 
 export function joinGameRoom(
@@ -84,21 +138,22 @@ export function joinGameRoom(
   odId: string,
   playerName: string,
   deckName: string,
-  initialState: Partial<PlayerState>
+  initialState: Partial<PlayerStateWire>
 ) {
   const db = getDb();
   if (!db) return;
 
-  const playerRef = ref(db, `rooms/${roomId}/players/${odId}`);
-  const playerState: PlayerState = {
+  const emptyZone: FirebaseZoneWire = { cardsById: {}, order: [] };
+
+  const playerState: PlayerStateWire = {
     odId,
     playerName,
     odName: deckName,
-    battlefield: initialState.battlefield || [],
-    graveyard: initialState.graveyard || [],
-    exile: initialState.exile || [],
-    hand: initialState.hand || [],
-    library: initialState.library || [],
+    battlefield: initialState.battlefield ?? emptyZone,
+    graveyard: initialState.graveyard ?? emptyZone,
+    exile: initialState.exile ?? emptyZone,
+    hand: initialState.hand ?? emptyZone,
+    library: initialState.library ?? emptyZone,
     handCount: initialState.handCount || 0,
     libraryCount: initialState.libraryCount || 0,
     life: initialState.life || 20,
@@ -106,18 +161,31 @@ export function joinGameRoom(
     isOnline: true,
   };
 
-  set(playerRef, playerState);
+  const playerSummary: PlayerSummary = {
+    odId,
+    playerName,
+    odName: deckName,
+    isOnline: true,
+  };
+
+  update(ref(db), {
+    [`rooms/${roomId}/players/${odId}`]: playerState,
+    [`roomsIndex/${roomId}/players/${odId}`]: playerSummary,
+  });
 }
 
 export function setPlayerOnlineStatus(roomId: string, odId: string, isOnline: boolean) {
   const db = getDb();
   if (!db) return;
 
-  const playerRef = ref(db, `rooms/${roomId}/players/${odId}`);
-  update(playerRef, { isOnline, lastUpdate: Date.now() });
+  update(ref(db), {
+    [`rooms/${roomId}/players/${odId}/isOnline`]: isOnline,
+    [`rooms/${roomId}/players/${odId}/lastUpdate`]: Date.now(),
+    [`roomsIndex/${roomId}/players/${odId}/isOnline`]: isOnline,
+  });
 }
 
-export function updatePlayerState(roomId: string, odId: string, updates: Partial<PlayerState>) {
+export function updatePlayerState(roomId: string, odId: string, updates: Partial<PlayerStateWire>) {
   const db = getDb();
   if (!db) return;
 
@@ -131,6 +199,9 @@ export function leaveGameRoom(roomId: string, odId: string) {
 
   const playerRef = ref(db, `rooms/${roomId}/players/${odId}`);
   remove(playerRef);
+
+  const playerIndexRef = ref(db, `roomsIndex/${roomId}/players/${odId}`);
+  remove(playerIndexRef);
 }
 
 export function deleteGameRoom(roomId: string) {
@@ -139,6 +210,9 @@ export function deleteGameRoom(roomId: string) {
 
   const roomRef = ref(db, `rooms/${roomId}`);
   remove(roomRef);
+
+  const roomIndexRef = ref(db, `roomsIndex/${roomId}`);
+  remove(roomIndexRef);
 }
 
 export function subscribeToRoom(
@@ -160,21 +234,21 @@ export function subscribeToRoom(
   return unsubscribe;
 }
 
-export function subscribeToRoomList(callback: (rooms: GameRoom[]) => void): () => void {
+export function subscribeToRoomList(callback: (rooms: RoomIndex[]) => void): () => void {
   const db = getDb();
   if (!db) {
     callback([]);
     return () => {};
   }
 
-  const roomsRef = ref(db, 'rooms');
+  const roomsRef = ref(db, 'roomsIndex');
   const unsubscribe = onValue(roomsRef, (snapshot) => {
     const data = snapshot.val();
     if (!data) {
       callback([]);
       return;
     }
-    const rooms = Object.values(data) as GameRoom[];
+    const rooms = Object.values(data) as RoomIndex[];
     callback(rooms);
   });
 

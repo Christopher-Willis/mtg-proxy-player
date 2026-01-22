@@ -56,6 +56,18 @@ export type GameCard = {
   faceDown: boolean;
 };
 
+export type FirebaseGameCard = {
+  instanceId: string;
+  cardId: string;
+  tapped: boolean;
+  faceDown: boolean;
+};
+
+export type FirebaseZoneWire = {
+  cardsById: Record<string, FirebaseGameCard>;
+  order: string[];
+};
+
 export type GameZone = 'library' | 'hand' | 'battlefield' | 'graveyard' | 'exile';
 
 export type GameState = {

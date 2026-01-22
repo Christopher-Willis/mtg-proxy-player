@@ -70,6 +70,35 @@ The app will be available at `http://localhost:5173`
 - **`npm run preview`** - Preview production build locally
 - **`npm run lint`** - Run ESLint
 
+## Recent Enhancements (and why)
+
+### Multiplayer traffic optimizations
+
+- **Lobby index (`roomsIndex/`)**
+  - **What:** The lobby subscribes to a lightweight `roomsIndex` tree instead of the full `rooms/` tree.
+  - **Why:** Subscribing to `rooms/` causes the lobby to receive *all* game-state updates for *all* rooms. `roomsIndex` only stores room metadata + player summaries.
+
+- **Turn tracking (`turnOrder`, `currentTurnIndex`)**
+  - **What:** Each room tracks a join-order `turnOrder` and a `currentTurnIndex`, and the UI shows whose turn it is with an **End Turn** button.
+  - **Why:** Helps keep multiplayer games organized without restricting off-turn interaction (Magic allows responses at any time).
+
+- **Minified multiplayer card payloads**
+  - **What:** Firebase no longer stores full Scryfall card objects. It stores only card identifiers and per-instance state.
+  - **Why:** Dramatically reduces bandwidth/storage while letting clients hydrate full card details from local deck data + a Scryfall cache.
+
+- **Zones stored as map + order (`{ cardsById, order }`)**
+  - **What:** Every zone in multiplayer (`library`, `hand`, `battlefield`, `graveyard`, `exile`) is stored as:
+    - `cardsById: Record<instanceId, { cardId, tapped, faceDown }>`
+    - `order: string[]` (ordered `instanceId`s)
+  - **Why:**
+    - Preserves ordering for zones where order matters.
+    - Enables future “diff-style” updates (update only the touched card / order change) rather than rewriting entire arrays.
+
+### TypeScript / Vite environment setup
+
+- **Added `tsconfig.json`**
+  - **Why:** Ensures Vite types (e.g. `import.meta.env`) are picked up and TypeScript tooling works reliably.
+
 ## Project Structure
 
 ```
@@ -90,6 +119,24 @@ src/
 │   └── scryfall.ts      # Scryfall API client
 └── types/          # TypeScript type definitions
 ```
+
+## Future Wins
+
+- **Incremental (diff-based) Firebase writes**
+  - Instead of syncing full zones, update only:
+    - a single card (`.../cardsById/<instanceId>/tapped`)
+    - and/or the relevant `order` list when cards move.
+
+- **Security + abuse prevention**
+  - Add Firebase Auth (anonymous is fine) + Realtime Database security rules.
+  - Optional: App Check.
+
+- **Presence + cleanup**
+  - Automatically mark players offline with presence.
+  - Optionally remove/disconnect players from turn order.
+
+- **Observability**
+  - Add lightweight logging / metrics around message sizes and update frequency.
 
 ## License
 

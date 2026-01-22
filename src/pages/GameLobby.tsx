@@ -1,13 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { loadDecks } from '../services/deckStorage';
-import { createGameRoom, subscribeToRoomList, getDb, GameRoom, deleteGameRoom } from '../services/firebase';
+import { createGameRoom, subscribeToRoomList, getDb, RoomIndex, deleteGameRoom } from '../services/firebase';
 import { Deck } from '../types/card';
 
 export function GameLobby() {
   const navigate = useNavigate();
   const [decks, setDecks] = useState<Deck[]>([]);
-  const [rooms, setRooms] = useState<GameRoom[]>([]);
+  const [rooms, setRooms] = useState<RoomIndex[]>([]);
   const [selectedDeck, setSelectedDeck] = useState<string>('');
   const [playerName, setPlayerName] = useState(() => localStorage.getItem('mtg-player-name') || '');
   const [newRoomName, setNewRoomName] = useState('');

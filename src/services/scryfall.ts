@@ -5,6 +5,8 @@ const MIN_REQUEST_INTERVAL_MS = 100;
 
 let lastRequestTime = 0;
 
+const cardCache = new Map<string, ScryfallCard>();
+
 async function rateLimitedFetch(url: string, options?: RequestInit): Promise<Response> {
   const now = Date.now();
   const timeSinceLastRequest = now - lastRequestTime;
@@ -65,10 +67,31 @@ export async function getCardByName(name: string, exact = false): Promise<Scryfa
     throw new Error(`Scryfall API error: ${response.status}`);
   }
 
-  return response.json();
+  const card: ScryfallCard = await response.json();
+  cardCache.set(card.id, card);
+  return card;
+}
+
+export function getCachedCardById(id: string): ScryfallCard | undefined {
+  return cardCache.get(id);
+}
+
+export async function prefetchCardsById(ids: string[]): Promise<void> {
+  const unique = Array.from(new Set(ids)).filter(Boolean);
+  const missing = unique.filter((id) => !cardCache.has(id));
+  for (const id of missing) {
+    try {
+      await getCardById(id);
+    } catch {
+      // ignore
+    }
+  }
 }
 
 export async function getCardById(id: string): Promise<ScryfallCard | null> {
+  const cached = cardCache.get(id);
+  if (cached) return cached;
+
   const url = `${API_BASE}/cards/${id}`;
 
   const response = await rateLimitedFetch(url, {
@@ -84,7 +107,9 @@ export async function getCardById(id: string): Promise<ScryfallCard | null> {
     throw new Error(`Scryfall API error: ${response.status}`);
   }
 
-  return response.json();
+  const card: ScryfallCard = await response.json();
+  cardCache.set(card.id, card);
+  return card;
 }
 
 export function getCardImageUrl(card: ScryfallCard, size: 'small' | 'normal' | 'large' = 'normal'): string {

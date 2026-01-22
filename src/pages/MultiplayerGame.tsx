@@ -1,16 +1,18 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { getDeck } from '../services/deckStorage';
-import { getCardImageUrl } from '../services/scryfall';
+import { getCardImageUrl, getCachedCardById, prefetchCardsById } from '../services/scryfall';
 import {
   joinGameRoom,
   updatePlayerState,
   setPlayerOnlineStatus,
+  addPlayerToTurnOrder,
+  advanceTurn,
   subscribeToRoom,
   GameRoom,
   PlayerState,
 } from '../services/firebase';
-import { Deck, GameCard } from '../types/card';
+import { Deck, FirebaseGameCard, FirebaseZoneWire, GameCard, ScryfallCard } from '../types/card';
 
 function shuffleArray<T>(array: T[]): T[] {
   const shuffled = [...array];
@@ -18,8 +20,82 @@ function shuffleArray<T>(array: T[]): T[] {
     const j = Math.floor(Math.random() * (i + 1));
     [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
   }
+
   return shuffled;
 }
+
+function createUnknownCard(id: string): ScryfallCard {
+  return {
+    id,
+    name: 'Unknown Card',
+    cmc: 0,
+    type_line: '',
+    color_identity: [],
+    set: '',
+    set_name: '',
+    rarity: '',
+  };
+}
+
+function toWireCard(gameCard: GameCard): FirebaseGameCard {
+  return {
+    instanceId: gameCard.instanceId,
+    cardId: gameCard.card.id,
+    tapped: gameCard.tapped,
+    faceDown: gameCard.faceDown,
+  };
+}
+
+function toWireZone(zone: GameCard[]): FirebaseZoneWire {
+  const cardsById: Record<string, FirebaseGameCard> = {};
+  const order: string[] = [];
+  for (const gc of zone) {
+    cardsById[gc.instanceId] = toWireCard(gc);
+    order.push(gc.instanceId);
+  }
+  return { cardsById, order };
+}
+
+function hydrateZone(
+  zone: FirebaseZoneWire | FirebaseGameCard[] | undefined,
+  localCards: Map<string, ScryfallCard>
+): GameCard[] {
+  if (!zone) return [];
+
+  // Back-compat: older rooms stored zones as FirebaseGameCard[]
+  const asArray = Array.isArray(zone) ? (zone as FirebaseGameCard[]) : null;
+  const asWire = (!Array.isArray(zone) ? (zone as FirebaseZoneWire) : null) as FirebaseZoneWire | null;
+
+  const wires: FirebaseGameCard[] = asArray
+    ? asArray
+    : (asWire?.order || [])
+        .map((id) => asWire?.cardsById?.[id])
+        .filter((c): c is FirebaseGameCard => Boolean(c));
+
+  return wires.map((wire) => {
+    const card = localCards.get(wire.cardId) || getCachedCardById(wire.cardId) || createUnknownCard(wire.cardId);
+    return {
+      instanceId: wire.instanceId,
+      card,
+      tapped: wire.tapped,
+      faceDown: wire.faceDown,
+    };
+  });
+}
+
+function collectZoneCardIds(zone: FirebaseZoneWire | FirebaseGameCard[] | undefined): string[] {
+  if (!zone) return [];
+  if (Array.isArray(zone)) return (zone as FirebaseGameCard[]).map((c) => c.cardId);
+  return Object.values((zone as FirebaseZoneWire).cardsById || {}).map((c) => c.cardId);
+}
+
+type HydratedRemotePlayer = Omit<PlayerState, 'battlefield' | 'graveyard' | 'exile' | 'hand' | 'library'> & {
+  battlefield: GameCard[];
+  graveyard: GameCard[];
+  exile: GameCard[];
+  hand: GameCard[];
+  library: GameCard[];
+};
 
 function createGameCards(deck: Deck): GameCard[] {
   const cards: GameCard[] = [];
@@ -48,7 +124,7 @@ export function MultiplayerGame() {
   const [odId] = useState(() => existingOdId || crypto.randomUUID());
   const [deck, setDeck] = useState<Deck | null>(null);
   const [room, setRoom] = useState<GameRoom | null>(null);
-  const [otherPlayers, setOtherPlayers] = useState<PlayerState[]>([]);
+  const [otherPlayers, setOtherPlayers] = useState<HydratedRemotePlayer[]>([]);
 
   const [library, setLibrary] = useState<GameCard[]>([]);
   const [hand, setHand] = useState<GameCard[]>([]);
@@ -86,6 +162,11 @@ export function MultiplayerGame() {
     console.log('[MultiplayerGame] Deck loaded:', loadedDeck.name);
     setDeck(loadedDeck);
 
+    const localCards = new Map<string, ScryfallCard>();
+    for (const dc of loadedDeck.cards) {
+      localCards.set(dc.card.id, dc.card);
+    }
+
     const unsubscribe = subscribeToRoom(roomId, (roomData) => {
       console.log('[MultiplayerGame] Room subscription callback', { 
         roomData: roomData ? 'exists' : 'null',
@@ -100,6 +181,12 @@ export function MultiplayerGame() {
       }
       setRoom(roomData);
 
+      if (roomData?.turnOrder) {
+        addPlayerToTurnOrder(roomId, roomData.turnOrder, odId);
+      } else {
+        addPlayerToTurnOrder(roomId, [], odId);
+      }
+
       if (!isInitializedRef.current && roomData?.players) {
         const existingPlayer = existingOdId
           ? roomData.players[existingOdId]
@@ -110,11 +197,22 @@ export function MultiplayerGame() {
         if (existingPlayer && existingPlayer.hand && existingPlayer.library) {
           console.log('[MultiplayerGame] Restoring existing player state', { odId: existingPlayer.odId });
           isInitializedRef.current = true;
-          setHand(existingPlayer.hand);
-          setLibrary(existingPlayer.library);
-          setBattlefield(existingPlayer.battlefield || []);
-          setGraveyard(existingPlayer.graveyard || []);
-          setExile(existingPlayer.exile || []);
+
+          const idsToPrefetch = [
+            ...collectZoneCardIds(existingPlayer.battlefield),
+            ...collectZoneCardIds(existingPlayer.graveyard),
+            ...collectZoneCardIds(existingPlayer.exile),
+            ...collectZoneCardIds(existingPlayer.hand),
+            ...collectZoneCardIds(existingPlayer.library),
+          ].filter((id) => !localCards.has(id));
+
+          void prefetchCardsById(idsToPrefetch);
+
+          setHand(hydrateZone(existingPlayer.hand, localCards));
+          setLibrary(hydrateZone(existingPlayer.library, localCards));
+          setBattlefield(hydrateZone(existingPlayer.battlefield, localCards));
+          setGraveyard(hydrateZone(existingPlayer.graveyard, localCards));
+          setExile(hydrateZone(existingPlayer.exile, localCards));
           setLife(existingPlayer.life || 20);
           setPlayerOnlineStatus(roomId, odId, true);
           setIsReady(true);
@@ -126,11 +224,11 @@ export function MultiplayerGame() {
           setLibrary(gameCards);
 
           joinGameRoom(roomId, odId, playerName, loadedDeck.name, {
-            battlefield: [],
-            graveyard: [],
-            exile: [],
-            hand: [],
-            library: gameCards,
+            battlefield: toWireZone([]),
+            graveyard: toWireZone([]),
+            exile: toWireZone([]),
+            hand: toWireZone([]),
+            library: toWireZone(gameCards),
             handCount: 0,
             libraryCount: gameCards.length,
             life: 20,
@@ -141,8 +239,23 @@ export function MultiplayerGame() {
       }
 
       if (roomData?.players) {
-        const others = Object.values(roomData.players).filter((p) => p.odId !== odId);
-        setOtherPlayers(others);
+        const othersWire = Object.values(roomData.players).filter((p) => p.odId !== odId);
+        const idsToPrefetch = othersWire
+          .flatMap((p) => [...collectZoneCardIds(p.battlefield), ...collectZoneCardIds(p.graveyard), ...collectZoneCardIds(p.exile)])
+          .filter((id) => !localCards.has(id));
+
+        void (async () => {
+          await prefetchCardsById(idsToPrefetch);
+          const hydrated = othersWire.map((p) => ({
+            ...p,
+            battlefield: hydrateZone(p.battlefield, localCards),
+            graveyard: hydrateZone(p.graveyard, localCards),
+            exile: hydrateZone(p.exile, localCards),
+            hand: [],
+            library: [],
+          }));
+          setOtherPlayers(hydrated);
+        })();
       }
     });
 
@@ -170,11 +283,11 @@ export function MultiplayerGame() {
     syncTimeoutRef.current = setTimeout(() => {
       console.log('[MultiplayerGame] Syncing state to Firebase');
       updatePlayerState(roomId, odId, {
-        battlefield,
-        graveyard,
-        exile,
-        hand,
-        library,
+        battlefield: toWireZone(battlefield),
+        graveyard: toWireZone(graveyard),
+        exile: toWireZone(exile),
+        hand: toWireZone(hand),
+        library: toWireZone(library),
         handCount: hand.length,
         libraryCount: library.length,
         life,
@@ -188,6 +301,11 @@ export function MultiplayerGame() {
       }
     };
   }, [roomId, odId, battlefield, graveyard, exile, hand, library, life, isReady]);
+
+  const endTurn = useCallback(() => {
+    if (!roomId || !room?.turnOrder || room.turnOrder.length === 0) return;
+    advanceTurn(roomId, room.turnOrder.length, room.currentTurnIndex || 0);
+  }, [room?.currentTurnIndex, room?.turnOrder, roomId]);
 
   const drawCard = useCallback(() => {
     console.log('[MultiplayerGame] drawCard called', { libraryLen: library.length });
@@ -422,6 +540,23 @@ export function MultiplayerGame() {
         </div>
 
         <div className="flex items-center gap-4">
+          <div className="text-sm text-gray-300">
+            <span className="text-gray-500">Turn:</span>{' '}
+            <span className="font-semibold">
+              {room?.turnOrder && room.turnOrder.length > 0
+                ? room.players?.[room.turnOrder[room.currentTurnIndex || 0]]?.playerName || 'Unknown'
+                : '—'}
+            </span>
+          </div>
+
+          <button
+            onClick={endTurn}
+            disabled={!room?.turnOrder || room.turnOrder.length === 0 || room.turnOrder[room.currentTurnIndex || 0] !== odId}
+            className="px-3 py-1 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 rounded font-semibold"
+          >
+            End Turn
+          </button>
+
           <div className="flex items-center gap-2">
             <button
               onClick={() => setLife((l) => l - 1)}
