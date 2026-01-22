@@ -7,9 +7,12 @@ import { ScryfallCard, Deck, DeckCard } from '../types/card';
 import { CardDisplay } from '../components/CardDisplay';
 import { DeckImport } from '../components/DeckImport';
 import { useNavigate } from 'react-router-dom';
+import { AuthButton } from '../components/AuthButton';
+import { useAuth } from '../hooks/useAuth';
 
 export function DeckBuilder() {
   const navigate = useNavigate();
+  const { isAnonymous } = useAuth();
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<ScryfallCard[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -197,7 +200,7 @@ export function DeckBuilder() {
       <div className="container mx-auto p-4">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-3xl font-bold">MTG Deck Builder</h1>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-3">
             <button
               onClick={() => setShowImport(true)}
               className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded font-semibold"
@@ -210,6 +213,7 @@ export function DeckBuilder() {
             >
               Multiplayer Lobby
             </button>
+            <AuthButton />
           </div>
         </div>
 
@@ -259,20 +263,24 @@ export function DeckBuilder() {
                       </p>
                     </div>
                     <div className="flex gap-1">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleCopyToCloud(deck); }}
-                        className="text-blue-400 hover:text-blue-300 px-1 text-xs"
-                        title="Copy to cloud"
-                      >
-                        ☁↑
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleMoveToCloud(deck); }}
-                        className="text-green-400 hover:text-green-300 px-1 text-xs"
-                        title="Move to cloud"
-                      >
-                        →☁
-                      </button>
+                      {!isAnonymous && (
+                        <>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleCopyToCloud(deck); }}
+                            className="text-blue-400 hover:text-blue-300 px-1 text-xs"
+                            title="Copy to cloud"
+                          >
+                            ☁↑
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleMoveToCloud(deck); }}
+                            className="text-green-400 hover:text-green-300 px-1 text-xs"
+                            title="Move to cloud"
+                          >
+                            →☁
+                          </button>
+                        </>
+                      )}
                       <button
                         onClick={(e) => { e.stopPropagation(); handleDeleteDeck(deck.id); }}
                         className="text-red-400 hover:text-red-300 px-1"
@@ -292,62 +300,81 @@ export function DeckBuilder() {
             <div>
               <div className="flex items-center gap-2 mb-2">
                 <h2 className="text-xl font-semibold">Cloud Decks</h2>
-                <span className="text-xs bg-blue-600/30 text-blue-400 px-2 py-0.5 rounded">{cloudDecks.length}/5</span>
+                {!isAnonymous && (
+                  <span className="text-xs bg-blue-600/30 text-blue-400 px-2 py-0.5 rounded">{cloudDecks.length}/5</span>
+                )}
+                {isAnonymous && (
+                  <span className="text-xs bg-gray-600/30 text-gray-400 px-2 py-0.5 rounded">Sign in required</span>
+                )}
               </div>
-              <p className="text-xs text-gray-500 mb-3">
-                Saved on server. Persists across devices but publicly accessible with minimal protection.
-              </p>
 
-              {cloudError && (
-                <p className="text-red-400 text-xs mb-2">{cloudError}</p>
-              )}
-
-              {isCloudLoading ? (
-                <p className="text-gray-500 text-center py-2 text-sm">Loading cloud decks...</p>
-              ) : (
-                <div className="space-y-1 max-h-[200px] overflow-y-auto">
-                  {cloudDecks.map((deck) => (
-                    <div
-                      key={deck.id}
-                      className={`p-2 rounded cursor-pointer flex justify-between items-center gap-1 ${
-                        currentDeck?.id === deck.id && currentDeckSource === 'cloud' ? 'bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'
-                      }`}
-                      onClick={() => handleSelectDeck(deck, 'cloud')}
-                    >
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-sm truncate">{deck.name}</p>
-                        <p className="text-xs text-gray-400">
-                          {deck.cards.reduce((sum, dc) => sum + dc.quantity, 0)} cards
-                        </p>
-                      </div>
-                      <div className="flex gap-1">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleCopyToLocal(deck); }}
-                          className="text-yellow-400 hover:text-yellow-300 px-1 text-xs"
-                          title="Copy to local"
-                        >
-                          ↓💾
-                        </button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleMoveToLocal(deck); }}
-                          className="text-green-400 hover:text-green-300 px-1 text-xs"
-                          title="Move to local"
-                        >
-                          💾←
-                        </button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleDeleteCloudDeck(deck.id); }}
-                          className="text-red-400 hover:text-red-300 px-1"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                  {cloudDecks.length === 0 && (
-                    <p className="text-gray-500 text-center py-2 text-sm">No cloud decks</p>
-                  )}
+              {isAnonymous ? (
+                <div className="bg-gray-700/50 rounded p-3 text-center">
+                  <p className="text-sm text-gray-400 mb-2">
+                    Sign in with Google to save decks to the cloud
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    Cloud decks persist across devices and won't be lost when browser data is cleared
+                  </p>
                 </div>
+              ) : (
+                <>
+                  <p className="text-xs text-gray-500 mb-3">
+                    Saved on server. Persists across devices.
+                  </p>
+
+                  {cloudError && (
+                    <p className="text-red-400 text-xs mb-2">{cloudError}</p>
+                  )}
+
+                  {isCloudLoading ? (
+                    <p className="text-gray-500 text-center py-2 text-sm">Loading cloud decks...</p>
+                  ) : (
+                    <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                      {cloudDecks.map((deck) => (
+                        <div
+                          key={deck.id}
+                          className={`p-2 rounded cursor-pointer flex justify-between items-center gap-1 ${
+                            currentDeck?.id === deck.id && currentDeckSource === 'cloud' ? 'bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'
+                          }`}
+                          onClick={() => handleSelectDeck(deck, 'cloud')}
+                        >
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-sm truncate">{deck.name}</p>
+                            <p className="text-xs text-gray-400">
+                              {deck.cards.reduce((sum, dc) => sum + dc.quantity, 0)} cards
+                            </p>
+                          </div>
+                          <div className="flex gap-1">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleCopyToLocal(deck); }}
+                              className="text-yellow-400 hover:text-yellow-300 px-1 text-xs"
+                              title="Copy to local"
+                            >
+                              ↓💾
+                            </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleMoveToLocal(deck); }}
+                              className="text-green-400 hover:text-green-300 px-1 text-xs"
+                              title="Move to local"
+                            >
+                              💾←
+                            </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleDeleteCloudDeck(deck.id); }}
+                              className="text-red-400 hover:text-red-300 px-1"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      {cloudDecks.length === 0 && (
+                        <p className="text-gray-500 text-center py-2 text-sm">No cloud decks</p>
+                      )}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>

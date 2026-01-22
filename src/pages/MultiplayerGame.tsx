@@ -179,9 +179,8 @@ export function MultiplayerGame() {
 
   const deckId = searchParams.get('deck');
   const playerName = searchParams.get('name') || 'Player';
-  const existingOdId = searchParams.get('odId');
 
-  const [odId] = useState(() => existingOdId || crypto.randomUUID());
+  const currentUidRef = useRef<string | null>(null);
   const [deck, setDeck] = useState<Deck | null>(null);
   const [room, setRoom] = useState<GameRoom | null>(null);
   const [otherPlayers, setOtherPlayers] = useState<HydratedRemotePlayer[]>([]);
@@ -235,6 +234,7 @@ export function MultiplayerGame() {
         navigate('/lobby');
         return;
       }
+      currentUidRef.current = user.uid;
       unsubscribe = subscribeToRoom(roomId, (roomData) => {
       console.log('[MultiplayerGame] Room subscription callback', { 
         roomData: roomData ? 'exists' : 'null',
@@ -250,21 +250,17 @@ export function MultiplayerGame() {
       setRoom(roomData);
 
       if (roomData?.turnOrder) {
-        addPlayerToTurnOrder(roomId, roomData.turnOrder, odId, true);
+        addPlayerToTurnOrder(roomId, roomData.turnOrder, user.uid, true);
       } else {
-        addPlayerToTurnOrder(roomId, [], odId, true);
+        addPlayerToTurnOrder(roomId, [], user.uid, true);
       }
 
       if (!isInitializedRef.current) {
         const players = roomData?.players || {};
-        const existingPlayer = existingOdId
-          ? players[existingOdId]
-          : Object.values(players).find(
-              (p) => p.playerName === playerName && p.odName === loadedDeck.name
-            );
+        const existingPlayer = players[user.uid];
 
         if (existingPlayer && existingPlayer.hand && existingPlayer.library) {
-          console.log('[MultiplayerGame] Restoring existing player state', { odId: existingPlayer.odId });
+          console.log('[MultiplayerGame] Restoring existing player state', { uid: existingPlayer.uid });
           isInitializedRef.current = true;
 
           const idsToPrefetch = [
@@ -283,7 +279,7 @@ export function MultiplayerGame() {
           setGraveyard(hydrateZone(existingPlayer.graveyard, localCards));
           setExile(hydrateZone(existingPlayer.exile, localCards));
           setLife(existingPlayer.life || 20);
-          setPlayerOnlineStatus(roomId, odId, true);
+          setPlayerOnlineStatus(roomId, user.uid, true);
           setIsReady(true);
           console.log('[MultiplayerGame] Player state restored, isReady=true');
         } else {
@@ -292,7 +288,7 @@ export function MultiplayerGame() {
           const gameCards = createGameCards(loadedDeck);
           setLibrary(gameCards);
 
-          joinGameRoom(roomId, odId, user.uid, playerName, loadedDeck.name, {
+          joinGameRoom(roomId, user.uid, playerName, loadedDeck.name, {
             battlefield: toWireZone([]),
             graveyard: toWireZone([]),
             exile: toWireZone([]),
@@ -308,7 +304,7 @@ export function MultiplayerGame() {
       }
 
       if (roomData?.players) {
-        const othersWire = Object.values(roomData.players).filter((p) => p.odId !== odId);
+        const othersWire = Object.values(roomData.players).filter((p) => p.uid !== user.uid);
         const idsToPrefetch = othersWire
           .flatMap((p) => [...collectZoneCardIds(p.battlefield), ...collectZoneCardIds(p.graveyard), ...collectZoneCardIds(p.exile)])
           .filter((id) => !localCards.has(id));
@@ -331,11 +327,11 @@ export function MultiplayerGame() {
 
     return () => {
       if (unsubscribe) unsubscribe();
-      if (roomId) {
-        setPlayerOnlineStatus(roomId, odId, false);
+      if (roomId && currentUidRef.current) {
+        setPlayerOnlineStatus(roomId, currentUidRef.current, false);
       }
     };
-  }, [roomId, deckId, navigate, odId, playerName]);
+  }, [roomId, deckId, navigate, playerName]);
 
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastSyncedStateRef = useRef<{
@@ -371,7 +367,8 @@ export function MultiplayerGame() {
 
       if (!prev) {
         console.log('[MultiplayerGame] Initial sync - sending full state');
-        updatePlayerState(roomId, odId, {
+        if (!currentUidRef.current) return;
+        updatePlayerState(roomId, currentUidRef.current, {
           battlefield: currentBattlefield,
           graveyard: currentGraveyard,
           exile: currentExile,
@@ -407,7 +404,8 @@ export function MultiplayerGame() {
             zones: Object.keys(diff).filter(k => ['battlefield', 'graveyard', 'exile', 'hand', 'library'].includes(k)),
             life: diff.life !== undefined,
           });
-          updatePlayerStateDiff(roomId, odId, diff);
+          if (!currentUidRef.current) return;
+          updatePlayerStateDiff(roomId, currentUidRef.current, diff);
         } else {
           console.log('[MultiplayerGame] No changes to sync');
         }
@@ -430,7 +428,7 @@ export function MultiplayerGame() {
         clearTimeout(syncTimeoutRef.current);
       }
     };
-  }, [roomId, odId, battlefield, graveyard, exile, hand, library, life, isReady]);
+  }, [roomId, battlefield, graveyard, exile, hand, library, life, isReady]);
 
   const endTurn = useCallback(() => {
     if (!roomId || !room?.turnOrder || room.turnOrder.length === 0) return;
@@ -681,7 +679,7 @@ export function MultiplayerGame() {
 
           <button
             onClick={endTurn}
-            disabled={!room?.turnOrder || room.turnOrder.length === 0 || room.turnOrder[room.currentTurnIndex || 0] !== odId}
+            disabled={!room?.turnOrder || room.turnOrder.length === 0 || room.turnOrder[room.currentTurnIndex || 0] !== currentUidRef.current}
             className="px-3 py-1 bg-orange-600 hover:bg-orange-700 disabled:bg-gray-600 rounded font-semibold"
           >
             End Turn
@@ -746,10 +744,10 @@ export function MultiplayerGame() {
       {otherPlayers.length > 0 && (
         <div className="bg-gray-800/50 border-b border-gray-700">
           {otherPlayers.map((player) => (
-            <div key={player.odId} className="p-3 border-b border-gray-700 last:border-b-0">
+            <div key={player.uid} className="p-3 border-b border-gray-700 last:border-b-0">
               <div className="flex items-center gap-4 mb-2">
                 <span className="font-semibold text-blue-400">{player.playerName}</span>
-                <span className="text-gray-400">({player.odName})</span>
+                <span className="text-gray-400">({player.deckName})</span>
                 <span className="text-red-400">❤ {player.life}</span>
                 <span className="text-gray-500">Library: {player.libraryCount}</span>
                 <span className="text-gray-500">Hand: {player.handCount}</span>

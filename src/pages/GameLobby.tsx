@@ -3,9 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { loadDecks } from '../services/deckStorage';
 import { createGameRoom, subscribeToRoomList, getDb, RoomIndex, deleteGameRoom, ensureSignedIn } from '../services/firebase';
 import { Deck } from '../types/card';
+import { AuthButton } from '../components/AuthButton';
+import { useAuth } from '../hooks/useAuth';
 
 export function GameLobby() {
   const navigate = useNavigate();
+  const { isAnonymous } = useAuth();
   const [decks, setDecks] = useState<Deck[]>([]);
   const [rooms, setRooms] = useState<RoomIndex[]>([]);
   const [currentUid, setCurrentUid] = useState<string | null>(null);
@@ -145,12 +148,15 @@ export function GameLobby() {
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-3xl font-bold">Multiplayer Lobby</h1>
-          <button
-            onClick={() => navigate('/')}
-            className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded"
-          >
-            ← Back
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => navigate('/')}
+              className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded"
+            >
+              ← Back
+            </button>
+            <AuthButton />
+          </div>
         </div>
 
         {/* Player Setup */}
@@ -192,24 +198,40 @@ export function GameLobby() {
 
         {/* Create Room */}
         <div className="bg-gray-800 rounded-lg p-4 mb-6">
-          <h2 className="text-xl font-semibold mb-4">Create New Game</h2>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={newRoomName}
-              onChange={(e) => setNewRoomName(e.target.value)}
-              placeholder="Game room name..."
-              className="flex-1 px-3 py-2 bg-gray-700 rounded text-white"
-              onKeyDown={(e) => e.key === 'Enter' && handleCreateRoom()}
-            />
-            <button
-              onClick={handleCreateRoom}
-              disabled={!newRoomName.trim() || !selectedDeck || !playerName.trim() || isCreatingRoom}
-              className="px-6 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded font-semibold"
-            >
-              Create & Join
-            </button>
+          <div className="flex items-center gap-2 mb-4">
+            <h2 className="text-xl font-semibold">Create New Game</h2>
+            {isAnonymous && (
+              <span className="text-xs bg-gray-600/30 text-gray-400 px-2 py-0.5 rounded">Sign in required</span>
+            )}
           </div>
+          {isAnonymous ? (
+            <div className="bg-gray-700/50 rounded p-3 text-center">
+              <p className="text-sm text-gray-400 mb-1">
+                Sign in with Google to create games
+              </p>
+              <p className="text-xs text-gray-500">
+                Guests can join existing games but cannot create new ones
+              </p>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newRoomName}
+                onChange={(e) => setNewRoomName(e.target.value)}
+                placeholder="Game room name..."
+                className="flex-1 px-3 py-2 bg-gray-700 rounded text-white"
+                onKeyDown={(e) => e.key === 'Enter' && handleCreateRoom()}
+              />
+              <button
+                onClick={handleCreateRoom}
+                disabled={!newRoomName.trim() || !selectedDeck || !playerName.trim() || isCreatingRoom}
+                className="px-6 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed rounded font-semibold"
+              >
+                Create & Join
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Room List */}
@@ -220,8 +242,8 @@ export function GameLobby() {
           ) : (
             <div className="space-y-2">
               {rooms.map((room) => {
-                const mySession = room.players
-                  ? Object.values(room.players).find((p) => p.playerName === playerName)
+                const mySession = room.players && currentUid
+                  ? room.players[currentUid]
                   : null;
 
                 return (
@@ -235,7 +257,7 @@ export function GameLobby() {
                         {Object.keys(room.players || {}).length} player(s)
                         {room.players && Object.values(room.players).map((p) => (
                           <span
-                            key={p.odId}
+                            key={p.uid}
                             className={`ml-2 ${p.isOnline ? 'text-green-400' : 'text-gray-500'}`}
                           >
                             {p.playerName}
@@ -245,7 +267,7 @@ export function GameLobby() {
                       </p>
                       {mySession && (
                         <p className="text-sm text-yellow-400 mt-1">
-                          You have an existing session with deck: {mySession.odName}
+                          You have an existing session with deck: {mySession.deckName}
                         </p>
                       )}
                     </div>
@@ -268,11 +290,11 @@ export function GameLobby() {
                         ) : (
                           <button
                             onClick={() => {
-                              const deckToUse = decks.find((d) => d.name === mySession.odName);
+                              const deckToUse = decks.find((d) => d.name === mySession.deckName);
                               if (deckToUse) {
-                                navigate(`/multiplayer/${room.id}?deck=${deckToUse.id}&name=${encodeURIComponent(playerName)}&odId=${mySession.odId}`);
+                                navigate(`/multiplayer/${room.id}?deck=${deckToUse.id}&name=${encodeURIComponent(playerName)}`);
                               } else {
-                                alert(`Deck "${mySession.odName}" not found locally. You may need to re-import it.`);
+                                alert(`Deck "${mySession.deckName}" not found locally. You may need to re-import it.`);
                               }
                             }}
                             className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded font-semibold"

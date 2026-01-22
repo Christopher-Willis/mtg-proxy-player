@@ -156,7 +156,7 @@ export function ObserverView() {
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
             {players.map((player) => (
               <div
-                key={player.odId}
+                key={player.uid}
                 className="bg-gray-800 rounded-lg overflow-hidden"
               >
                 {/* Player Header */}
@@ -166,7 +166,7 @@ export function ObserverView() {
                       {player.playerName}
                     </span>
                     <span className="text-gray-400 text-sm">
-                      ({player.odName})
+                      ({player.deckName})
                     </span>
                   </div>
                   <div className="flex items-center gap-4 text-sm">

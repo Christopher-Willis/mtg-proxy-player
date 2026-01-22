@@ -7,7 +7,8 @@ A web-based Magic: The Gathering proxy playtesting application. Build decks, pla
 - **Card Search** - Search for MTG cards using the Scryfall API
 - **Deck Builder** - Create and manage decks with dual storage options:
   - **Local Storage** - Browser-based storage (fragile, cleared with browser data)
-  - **Cloud Storage** - Firebase-backed storage (max 5 decks, persists across devices, user-owned). Until we have real auth, you can't usefully use this as all login are actually anonymous and not tied to any account.
+  - **Cloud Storage** - Firebase-backed storage (max 5 decks, persists across devices, user-owned)
+- **Authentication** - Sign in with Google for persistent cloud storage, or continue as guest (data expires after 30 days of inactivity)
 - **Solo Playtesting** - Test your decks with a full playspace (battlefield, hand, graveyard, exile, library). Play spaces are manually managed for now as rules engine is a huge task.
 - **Multiplayer** - Create or join game rooms to play with others in real-time. Uses Firebase Anonymous Auth with ownership-based security rules (room creators control their rooms, players control their own state). 
 - **Observer Mode** - Watch ongoing multiplayer games
@@ -152,11 +153,19 @@ If you deploy this publicly, treat Firebase as public infrastructure. The Fireba
 
 ### Current implementation: ownership-based rules
 
-The app uses **Anonymous Auth** and stores ownership information (`createdByUid` on rooms, `uid` on player nodes) to enforce:
+The app uses **Firebase Auth** (Anonymous + Google Sign-In) and stores ownership information (`createdByUid` on rooms, `uid` on player nodes) to enforce:
 - Only the room creator can delete/cancel a room
 - Players can only modify their own player state
+- Users can only access their own cloud decks
 
-After enabling **Firebase Auth → Anonymous**, use these rules:
+### Enabling Authentication
+
+1. Go to Firebase Console → Authentication → Sign-in method
+2. Enable **Anonymous** (for guest users)
+3. Enable **Google** (for persistent accounts)
+4. Add your deployment domain to **Authorized domains** (e.g., `your-app.vercel.app`)
+
+After enabling authentication, use these rules:
 
 ```json
 {

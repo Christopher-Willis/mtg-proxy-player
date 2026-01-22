@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getDatabase, ref, onValue, push, remove, set, update, Database } from 'firebase/database';
-import { getAuth, onAuthStateChanged, signInAnonymously, Auth, User } from 'firebase/auth';
+import { getAuth, onAuthStateChanged, signInAnonymously, signInWithPopup, signOut as firebaseSignOut, GoogleAuthProvider, linkWithCredential, Auth, User } from 'firebase/auth';
 import { FirebaseZoneWire, FirebaseGameCard, Deck } from '../types/card';
 
 const firebaseConfig = {
@@ -76,11 +76,106 @@ export function getCurrentUserId(): string | null {
   return auth.currentUser?.uid ?? null;
 }
 
+export function getCurrentUser(): User | null {
+  if (!auth) return null;
+  return auth.currentUser;
+}
+
+export function isAnonymousUser(): boolean {
+  return auth?.currentUser?.isAnonymous ?? true;
+}
+
+export type AuthState = {
+  user: User | null;
+  isAnonymous: boolean;
+  isLoading: boolean;
+};
+
+export function subscribeToAuthState(callback: (state: AuthState) => void): () => void {
+  if (!auth) {
+    callback({ user: null, isAnonymous: true, isLoading: false });
+    return () => {};
+  }
+
+  return onAuthStateChanged(auth, (user) => {
+    callback({
+      user,
+      isAnonymous: user?.isAnonymous ?? true,
+      isLoading: false,
+    });
+  });
+}
+
+const googleProvider = new GoogleAuthProvider();
+
+export async function signInWithGoogle(): Promise<{ success: boolean; error?: string }> {
+  if (!auth) {
+    return { success: false, error: 'Auth not initialized' };
+  }
+
+  try {
+    await signInWithPopup(auth, googleProvider);
+    authReadyPromise = Promise.resolve(auth.currentUser);
+    return { success: true };
+  } catch (err) {
+    const error = err as { code?: string; message?: string };
+    if (error.code === 'auth/popup-closed-by-user') {
+      return { success: false, error: 'Sign-in cancelled' };
+    }
+    return { success: false, error: error.message || 'Sign-in failed' };
+  }
+}
+
+export async function signInAsGuest(): Promise<{ success: boolean; error?: string }> {
+  if (!auth) {
+    return { success: false, error: 'Auth not initialized' };
+  }
+
+  try {
+    const creds = await signInAnonymously(auth);
+    authReadyPromise = Promise.resolve(creds.user);
+    return { success: true };
+  } catch (err) {
+    const error = err as { message?: string };
+    return { success: false, error: error.message || 'Guest sign-in failed' };
+  }
+}
+
+export async function signOut(): Promise<void> {
+  if (!auth) return;
+  await firebaseSignOut(auth);
+  authReadyPromise = null;
+}
+
+export async function linkAnonymousToGoogle(): Promise<{ success: boolean; error?: string }> {
+  if (!auth?.currentUser) {
+    return { success: false, error: 'Not signed in' };
+  }
+
+  if (!auth.currentUser.isAnonymous) {
+    return { success: false, error: 'Already linked to an account' };
+  }
+
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    if (credential && auth.currentUser) {
+      await linkWithCredential(auth.currentUser, credential);
+    }
+    return { success: true };
+  } catch (err) {
+    const error = err as { code?: string; message?: string };
+    if (error.code === 'auth/credential-already-in-use') {
+      return { success: false, error: 'This Google account is already linked to another user' };
+    }
+    return { success: false, error: error.message || 'Failed to link account' };
+  }
+}
+
 export type PlayerStateWire = {
-  odId: string;
   uid: string;
   playerName: string;
-  odName: string;
+  deckName: string;
   battlefield: FirebaseZoneWire;
   graveyard: FirebaseZoneWire;
   exile: FirebaseZoneWire;
@@ -106,10 +201,9 @@ export type GameRoom = {
 };
 
 export type PlayerSummary = {
-  odId: string;
   uid: string;
   playerName: string;
-  odName: string;
+  deckName: string;
   isOnline: boolean;
 };
 
@@ -157,13 +251,13 @@ export async function createGameRoom(roomName: string, createdByUid: string): Pr
   return roomId;
 }
 
-export function addPlayerToTurnOrder(roomId: string, turnOrder: string[], odId: string, roomExists: boolean) {
+export function addPlayerToTurnOrder(roomId: string, turnOrder: string[], uid: string, roomExists: boolean) {
   const db = getDb();
   if (!db || !roomExists) return;
 
-  if (turnOrder.includes(odId)) return;
+  if (turnOrder.includes(uid)) return;
 
-  const nextOrder = [...turnOrder, odId];
+  const nextOrder = [...turnOrder, uid];
   update(ref(db, `rooms/${roomId}`), {
     turnOrder: nextOrder,
   });
@@ -182,7 +276,6 @@ export function advanceTurn(roomId: string, turnOrderLength: number, currentTurn
 
 export function joinGameRoom(
   roomId: string,
-  odId: string,
   uid: string,
   playerName: string,
   deckName: string,
@@ -194,10 +287,9 @@ export function joinGameRoom(
   const emptyZone: FirebaseZoneWire = { cardsById: {}, order: [] };
 
   const playerState: PlayerStateWire = {
-    odId,
     uid,
     playerName,
-    odName: deckName,
+    deckName,
     battlefield: initialState.battlefield ?? emptyZone,
     graveyard: initialState.graveyard ?? emptyZone,
     exile: initialState.exile ?? emptyZone,
@@ -211,35 +303,34 @@ export function joinGameRoom(
   };
 
   const playerSummary: PlayerSummary = {
-    odId,
     uid,
     playerName,
-    odName: deckName,
+    deckName,
     isOnline: true,
   };
 
   void Promise.all([
-    set(ref(db, `rooms/${roomId}/players/${odId}`), playerState),
-    set(ref(db, `roomsIndex/${roomId}/players/${odId}`), playerSummary),
+    set(ref(db, `rooms/${roomId}/players/${uid}`), playerState),
+    set(ref(db, `roomsIndex/${roomId}/players/${uid}`), playerSummary),
   ]);
 }
 
-export function setPlayerOnlineStatus(roomId: string, odId: string, isOnline: boolean) {
+export function setPlayerOnlineStatus(roomId: string, uid: string, isOnline: boolean) {
   const db = getDb();
   if (!db) return;
 
   const lastUpdate = Date.now();
   void Promise.all([
-    update(ref(db, `rooms/${roomId}/players/${odId}`), { isOnline, lastUpdate }),
-    update(ref(db, `roomsIndex/${roomId}/players/${odId}`), { isOnline }),
+    update(ref(db, `rooms/${roomId}/players/${uid}`), { isOnline, lastUpdate }),
+    update(ref(db, `roomsIndex/${roomId}/players/${uid}`), { isOnline }),
   ]);
 }
 
-export function updatePlayerState(roomId: string, odId: string, updates: Partial<PlayerStateWire>) {
+export function updatePlayerState(roomId: string, uid: string, updates: Partial<PlayerStateWire>) {
   const db = getDb();
   if (!db) return;
 
-  const playerRef = ref(db, `rooms/${roomId}/players/${odId}`);
+  const playerRef = ref(db, `rooms/${roomId}/players/${uid}`);
   update(playerRef, { ...updates, lastUpdate: Date.now() });
 }
 
@@ -261,11 +352,11 @@ export type PlayerStateDiff = {
   life?: number;
 };
 
-export function updatePlayerStateDiff(roomId: string, odId: string, diff: PlayerStateDiff) {
+export function updatePlayerStateDiff(roomId: string, uid: string, diff: PlayerStateDiff) {
   const db = getDb();
   if (!db) return;
 
-  const basePath = `rooms/${roomId}/players/${odId}`;
+  const basePath = `rooms/${roomId}/players/${uid}`;
   const updates: Record<string, unknown> = {
     [`${basePath}/lastUpdate`]: Date.now(),
     [`${basePath}/isOnline`]: true,
@@ -310,14 +401,14 @@ export function updatePlayerStateDiff(roomId: string, odId: string, diff: Player
   update(ref(db), updates);
 }
 
-export function leaveGameRoom(roomId: string, odId: string) {
+export function leaveGameRoom(roomId: string, uid: string) {
   const db = getDb();
   if (!db) return;
 
-  const playerRef = ref(db, `rooms/${roomId}/players/${odId}`);
+  const playerRef = ref(db, `rooms/${roomId}/players/${uid}`);
   remove(playerRef);
 
-  const playerIndexRef = ref(db, `roomsIndex/${roomId}/players/${odId}`);
+  const playerIndexRef = ref(db, `roomsIndex/${roomId}/players/${uid}`);
   remove(playerIndexRef);
 }
 
