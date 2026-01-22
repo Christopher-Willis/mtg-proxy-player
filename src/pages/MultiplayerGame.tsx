@@ -255,10 +255,11 @@ export function MultiplayerGame() {
         addPlayerToTurnOrder(roomId, [], odId, true);
       }
 
-      if (!isInitializedRef.current && roomData?.players) {
+      if (!isInitializedRef.current) {
+        const players = roomData?.players || {};
         const existingPlayer = existingOdId
-          ? roomData.players[existingOdId]
-          : Object.values(roomData.players).find(
+          ? players[existingOdId]
+          : Object.values(players).find(
               (p) => p.playerName === playerName && p.odName === loadedDeck.name
             );
 
@@ -285,7 +286,7 @@ export function MultiplayerGame() {
           setPlayerOnlineStatus(roomId, odId, true);
           setIsReady(true);
           console.log('[MultiplayerGame] Player state restored, isReady=true');
-        } else if (!isInitializedRef.current) {
+        } else {
           console.log('[MultiplayerGame] Creating new player');
           isInitializedRef.current = true;
           const gameCards = createGameCards(loadedDeck);
