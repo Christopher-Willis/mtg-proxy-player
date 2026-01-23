@@ -12,3 +12,8 @@ select,
 button:disabled {
   cursor: not-allowed;
 }
+
+.writing-mode-vertical {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+}

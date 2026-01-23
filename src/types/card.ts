@@ -41,12 +41,44 @@ export type DeckCard = {
   quantity: number;
 };
 
+export type TokenDefinition = {
+  id: string;
+  name: string;
+  imageUrl?: string;
+  power?: string;
+  toughness?: string;
+  colors?: string[];
+  isCustom: boolean;
+};
+
+export type CounterDefinition = {
+  id: string;
+  name: string;
+  symbol: string;
+  color: string;
+  isCustom: boolean;
+};
+
+export type DeckTokenBox = {
+  tokens: TokenDefinition[];
+  counters: CounterDefinition[];
+};
+
 export type Deck = {
   id: string;
   name: string;
   cards: DeckCard[];
+  tokenBox?: DeckTokenBox;
   createdAt: number;
   updatedAt: number;
+};
+
+export type CardCounter = {
+  counterId: string;
+  name: string;
+  symbol: string;
+  color: string;
+  count: number;
 };
 
 export type GameCard = {
@@ -54,6 +86,14 @@ export type GameCard = {
   card: ScryfallCard;
   tapped: boolean;
   faceDown: boolean;
+  counters?: CardCounter[];
+};
+
+export type GameToken = {
+  instanceId: string;
+  token: TokenDefinition;
+  tapped: boolean;
+  counters?: CardCounter[];
 };
 
 export type FirebaseGameCard = {

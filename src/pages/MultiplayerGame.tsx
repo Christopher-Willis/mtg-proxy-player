@@ -16,7 +16,10 @@ import {
   PlayerStateDiff,
   ensureSignedIn,
 } from '../services/firebase';
-import { Deck, FirebaseGameCard, FirebaseZoneWire, GameCard, ScryfallCard } from '../types/card';
+import { Deck, FirebaseGameCard, FirebaseZoneWire, GameCard, ScryfallCard, DeckTokenBox, TokenDefinition, CounterDefinition, GameToken } from '../types/card';
+import { TokenDrawer } from '../components/TokenDrawer';
+import { getDefaultTokenBox } from '../data/defaultTokens';
+import { saveDeck } from '../services/deckStorage';
 
 function shuffleArray<T>(array: T[]): T[] {
   const shuffled = [...array];
@@ -193,7 +196,13 @@ export function MultiplayerGame() {
   const [life, setLife] = useState(20);
 
   const [selectedCard, setSelectedCard] = useState<GameCard | null>(null);
+  const [selectedToken, setSelectedToken] = useState<GameToken | null>(null);
   const [draggedCard, setDraggedCard] = useState<{ card: GameCard; from: string } | null>(null);
+  const [draggedBattlefieldToken, setDraggedBattlefieldToken] = useState<GameToken | null>(null);
+  const [tokens, setTokens] = useState<GameToken[]>([]);
+  const [isTokenDrawerOpen, setIsTokenDrawerOpen] = useState(false);
+  const [tokenBox, setTokenBox] = useState<DeckTokenBox>(getDefaultTokenBox());
+  const [draggedTokenItem, setDraggedTokenItem] = useState<{ type: 'token' | 'counter'; item: TokenDefinition | CounterDefinition } | null>(null);
   const [showLibrarySearch, setShowLibrarySearch] = useState(false);
   const [librarySearchName, setLibrarySearchName] = useState('');
   const [librarySearchType, setLibrarySearchType] = useState('');
@@ -465,7 +474,56 @@ export function MultiplayerGame() {
     setGraveyard([]);
     setExile([]);
     setLife(20);
+    setTokens([]);
   }, [deck]);
+
+  const handleTokenBoxChange = useCallback((newTokenBox: DeckTokenBox) => {
+    setTokenBox(newTokenBox);
+    if (deck) {
+      const updatedDeck = { ...deck, tokenBox: newTokenBox, updatedAt: Date.now() };
+      saveDeck(updatedDeck);
+    }
+  }, [deck]);
+
+  const handleTokenDragStart = useCallback((type: 'token' | 'counter', item: TokenDefinition | CounterDefinition) => {
+    setDraggedTokenItem({ type, item });
+  }, []);
+
+  const handleTokenDrop = useCallback((zone: string) => {
+    if (!draggedTokenItem || draggedTokenItem.type !== 'token') return;
+    
+    const token = draggedTokenItem.item as TokenDefinition;
+    const newGameToken: GameToken = {
+      instanceId: crypto.randomUUID(),
+      token,
+      tapped: false,
+    };
+    
+    if (zone === 'battlefield') {
+      setTokens(prev => [...prev, newGameToken]);
+    }
+    
+    setDraggedTokenItem(null);
+  }, [draggedTokenItem]);
+
+  const removeToken = useCallback((instanceId: string) => {
+    setTokens(prev => prev.filter(t => t.instanceId !== instanceId));
+  }, []);
+
+  const addToken = useCallback((token: TokenDefinition) => {
+    const newGameToken: GameToken = {
+      instanceId: crypto.randomUUID(),
+      token,
+      tapped: false,
+    };
+    setTokens(prev => [...prev, newGameToken]);
+  }, []);
+
+  const toggleTokenTapped = useCallback((instanceId: string) => {
+    setTokens(prev => prev.map(t => 
+      t.instanceId === instanceId ? { ...t, tapped: !t.tapped } : t
+    ));
+  }, []);
 
   const playCard = useCallback((card: GameCard) => {
     setHand((prev) => prev.filter((c) => c.instanceId !== card.instanceId));
@@ -612,6 +670,13 @@ export function MultiplayerGame() {
   };
 
   const handleDrop = (to: string) => {
+    // Handle battlefield token being dragged to graveyard (removes the token)
+    if (draggedBattlefieldToken && to === 'graveyard') {
+      removeToken(draggedBattlefieldToken.instanceId);
+      setDraggedBattlefieldToken(null);
+      return;
+    }
+
     if (!draggedCard) return;
 
     const { card, from } = draggedCard;
@@ -737,6 +802,13 @@ export function MultiplayerGame() {
           >
             Reset
           </button>
+
+          <button
+            onClick={() => setIsTokenDrawerOpen(true)}
+            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 rounded"
+          >
+            🎴 Tokens
+          </button>
         </div>
       </div>
 
@@ -794,7 +866,7 @@ export function MultiplayerGame() {
       <div
         className="flex-1 p-4 bg-green-900/30 min-h-[150px]"
         onDragOver={(e) => e.preventDefault()}
-        onDrop={() => handleDrop('battlefield')}
+        onDrop={() => { handleDrop('battlefield'); handleTokenDrop('battlefield'); }}
       >
         <h2 className="text-sm text-gray-400 mb-2">Creatures & Other Permanents ({playerName})</h2>
         <div className="flex flex-wrap gap-2">
@@ -821,6 +893,40 @@ export function MultiplayerGame() {
                 />
               </div>
             ))}
+          {/* Tokens */}
+          {tokens.map((gameToken) => (
+            <div
+              key={gameToken.instanceId}
+              draggable
+              onDragStart={() => setDraggedBattlefieldToken(gameToken)}
+              onDragEnd={() => setDraggedBattlefieldToken(null)}
+              onClick={() => toggleTokenTapped(gameToken.instanceId)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setSelectedToken(gameToken);
+              }}
+              className={`cursor-grab active:cursor-grabbing transition-transform relative ${
+                gameToken.tapped ? 'rotate-90 mx-8 my-3' : ''
+              }`}
+              title="Click to tap, drag to graveyard to remove, right-click for options"
+            >
+              {gameToken.token.imageUrl ? (
+                <img
+                  src={gameToken.token.imageUrl}
+                  alt={gameToken.token.name}
+                  className="h-36 rounded shadow-lg hover:ring-2 hover:ring-purple-500"
+                />
+              ) : (
+                <div className="h-36 w-24 bg-gray-700 rounded shadow-lg hover:ring-2 hover:ring-purple-500 flex flex-col items-center justify-center p-2">
+                  <span className="text-lg font-bold text-center">{gameToken.token.name}</span>
+                  {gameToken.token.power && gameToken.token.toughness && (
+                    <span className="text-sm text-gray-400">{gameToken.token.power}/{gameToken.token.toughness}</span>
+                  )}
+                  <span className="text-xs text-purple-400 mt-1">TOKEN</span>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       </div>
 
@@ -1412,6 +1518,73 @@ export function MultiplayerGame() {
           </div>
         </div>
       )}
+
+      {/* Token Preview Modal */}
+      {selectedToken && (
+        <div
+          className="fixed inset-0 bg-black/80 flex items-center justify-center z-50"
+          onClick={() => setSelectedToken(null)}
+        >
+          <div
+            className="bg-gray-800 rounded-lg p-4 max-w-md"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex flex-col items-center gap-4">
+              {selectedToken.token.imageUrl ? (
+                <img
+                  src={selectedToken.token.imageUrl}
+                  alt={selectedToken.token.name}
+                  className="max-h-[70vh] rounded-lg"
+                />
+              ) : (
+                <div className="h-64 w-48 bg-gray-700 rounded-lg flex flex-col items-center justify-center p-4">
+                  <span className="text-2xl font-bold text-center">{selectedToken.token.name}</span>
+                  {selectedToken.token.power && selectedToken.token.toughness && (
+                    <span className="text-xl text-gray-400 mt-2">{selectedToken.token.power}/{selectedToken.token.toughness}</span>
+                  )}
+                  <span className="text-sm text-purple-400 mt-2">TOKEN</span>
+                </div>
+              )}
+              <div className="flex gap-2 w-full">
+                <button
+                  onClick={() => {
+                    toggleTokenTapped(selectedToken.instanceId);
+                    setSelectedToken(null);
+                  }}
+                  className="flex-1 px-3 py-2 bg-yellow-600 hover:bg-yellow-700 rounded"
+                >
+                  {selectedToken.tapped ? 'Untap' : 'Tap'}
+                </button>
+                <button
+                  onClick={() => {
+                    removeToken(selectedToken.instanceId);
+                    setSelectedToken(null);
+                  }}
+                  className="flex-1 px-3 py-2 bg-red-600 hover:bg-red-700 rounded"
+                >
+                  Remove Token
+                </button>
+              </div>
+              <button
+                onClick={() => setSelectedToken(null)}
+                className="w-full px-3 py-2 bg-gray-600 hover:bg-gray-500 rounded"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Token Drawer */}
+      <TokenDrawer
+        isOpen={isTokenDrawerOpen}
+        onToggle={() => setIsTokenDrawerOpen(!isTokenDrawerOpen)}
+        tokenBox={tokenBox}
+        onTokenBoxChange={handleTokenBoxChange}
+        onDragStart={handleTokenDragStart}
+        onTokenAdd={addToken}
+      />
     </div>
   );
 }

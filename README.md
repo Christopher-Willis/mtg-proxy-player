@@ -161,6 +161,11 @@ src/
 
 ## Future Wins
 
+- **Token/counter auto-detection**
+  - Scan deck card text for token and counter mentions (e.g., "create a 1/1 white Soldier creature token", "put a +1/+1 counter")
+  - Auto-populate the token drawer with relevant tokens and counters based on the deck's cards
+  - Use Scryfall's token relations API to fetch actual token images
+
 - **Presence + cleanup**
   - Automatically mark players offline with Firebase `onDisconnect()` presence.
   - Optionally remove/disconnect players from turn order after extended absence.
